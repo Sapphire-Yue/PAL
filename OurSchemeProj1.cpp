@@ -15,7 +15,11 @@ class Function {
         ~Function();
         void checkTypeOfToken(string &token);
         bool isINT(string &token);
+        bool isDOT(string &token);
         bool isFLOAT(string &token);
+        bool isNIL(string &token);
+        bool isT(string &token);
+        bool isQUOTE(string &token);
     private:
         string input;
 };
@@ -25,7 +29,7 @@ class Reader {
         Reader();
         ~Reader();
         void read();
-        void saperateLineToToken(string &line);
+        void saperateExprToToken(string &expr);
         void storeTokenInAST(string &token);
     private:
         Function function;
@@ -56,22 +60,22 @@ void Reader::read() {
     cout << "Welcome to OurScheme!" << endl;
     cout << "> ";
     char ch;    // 讀入字元
-    string line;
+    string expr;
     cur = root;
-    while ( getline(cin, line) ) {
-        cout << "You entered: " << ch << " " << line << endl;
-        if ( line.empty() ) continue; // 該行並未輸入資料
-        saperateLineToToken(line);
+    while ( getline(cin, expr) ) {
+        cout << "You entered: " << ch << " " << expr << endl;
+        if ( expr.empty() ) continue; // 該行並未輸入資料
+        saperateExprToToken(expr);
         if ( !left_paren ) cout << "> ";
     }
     cout << "Goodbye!" << endl;
 }
 
-void Reader::saperateLineToToken(string &line) {
-    cout << "saperateLineToToken" << endl;
+void Reader::saperateExprToToken(string &expr) {
+    cout << "saperateExprToToken" << endl;
     int nil = 0; // 判斷是否為空括弧
     string token;
-    for ( auto &c : line ) {
+    for ( auto &c : expr ) {
         if ( c == '(' ) {
             ++left_paren;
             nil = 0;
@@ -83,11 +87,18 @@ void Reader::saperateLineToToken(string &line) {
                 cout << "nil" << endl;
                 token = "nil";
                 storeTokenInAST(token);
+                ++nil;
             }
             else if ( !token.empty() ) {
                 // 遇到右括弧時，還有資料未寫入AST
                 storeTokenInAST(token);
             }
+            token.clear();
+        }
+        else if ( c == '\'' ) {
+            // 遇到引號，將quote存入AST
+            token = "'";
+            storeTokenInAST(token);
             token.clear();
         }
         else if ( c == ' ' ) {
@@ -100,7 +111,7 @@ void Reader::saperateLineToToken(string &line) {
         else token += c;
     }
 
-    if ( !left_paren ) {
+    if ( !token.empty() ) {
         storeTokenInAST(token);
         token.clear();
     }
@@ -135,7 +146,11 @@ void Function::checkTypeOfToken(string &token) {
     // 分辨Token的型態
     cout << "checkTypeOfToken" << endl;
     if ( isINT(token) ) cout << "INT" << endl;
+    else if ( isDOT(token) ) cout << "DOT" << endl;
     else if ( isFLOAT(token) ) cout << "FLOAT" << endl;
+    else if ( isNIL(token) ) cout << "NIL" << endl;
+    else if ( isT(token) ) cout << "T" << endl;
+    else if ( isQUOTE(token) ) cout << "QUOTE" << endl;
     else cout << "SYMBOL" << endl;
 }
 
@@ -156,6 +171,13 @@ bool Function::isINT(string &token) {
 
     token = num;
     return true;
+}
+
+bool Function::isDOT(string &token) {
+    /*檢查Token是否為點*/
+    int len = token.size();
+    if ( len == 1 && token[0] == '.' ) return true;
+    return false;
 }
 
 bool Function::isFLOAT(string &token) {
@@ -194,4 +216,25 @@ bool Function::isFLOAT(string &token) {
 
     token = num;
     return true;
+}
+
+bool Function::isNIL(string &token) {
+    /*檢查Token是否為空*/
+    if ( token == "nil" || token == "#f" ) return true;
+    return false;
+}
+
+bool Function::isT(string &token) {
+    /*檢查Token是否為T*/
+    if ( token == "t" || token == "#t" ) {
+        token = "#t";
+        return true;
+    }
+    return false;
+}
+
+bool Function::isQUOTE(string &token) {
+    /*檢查Token是否為引號*/
+    if ( token == "'" ) return true;
+    return false;
 }
