@@ -4,6 +4,10 @@
 
 using namespace std;
 
+enum AtomType {
+    INT, STRING, DOT, FLOAT, NIL, T, QUOTE, SYMBOL
+};
+
 struct ASTNode {
     string type, value;
     int line, column;
@@ -11,23 +15,30 @@ struct ASTNode {
     ASTNode *right;
 };
 
+class Atom {
+    public:
+        Atom();
+        ~Atom();
+        bool isINT(string &atom);
+        bool isSTRING(string &atom);
+        bool isDOT(string &atom);
+        bool isFLOAT(string &atom);
+        bool isNIL(string &atom);
+        bool isT(string &atom);
+        bool isQUOTE(string &atom);
+};
+
 class Function {
     public:
         Function();
         ~Function();
-        void checkTypeOfToken(string &token, string &type);
-        bool isINT(string &token);
-        bool isDOT(string &token);
-        bool isSTRING(string &token);
-        bool isFLOAT(string &token);
-        bool isNIL(string &token);
-        bool isT(string &token);
-        bool isQUOTE(string &token);
+        void checkTypeOfAtom(string &atom, string &type);
         void newExpression(ASTNode **cur, vector<ASTNode*> &ast, bool &dot);
         void optimizeAST(ASTNode *root);
         void leafToRoot(ASTNode *root, int level);
         void printAST(ASTNode *root);
     private:
+        Atom atom;
         string input;
         stack<pair<ASTNode*, int>> st;
 };
@@ -37,7 +48,7 @@ class Reader {
         Reader();
         ~Reader();
         void read();
-        void readNextLine(string &expr);
+        bool readNextLine(string &expr);
         bool readNextExpr(string &expr);
         void saperateExprToToken(string &expr, int &left_paren);
         void storeTokenInAST(string &token);
@@ -50,7 +61,7 @@ class Reader {
 };
 
 int main() {
-    //string num;
+    //string num;   // 測資題號
     //getline(cin, num);
     Reader reader;
     reader.read();
@@ -74,49 +85,43 @@ void Reader::read() {
 
     cout << "Welcome to OurScheme!" << endl;
     cout << "\n> ";
-    char ch;    // 讀入字元
     string expr;
-    cur = root;
+    cur = root; // 預設AST起點
+
     while ( true ) {
         // 重複讀取下一個S-expression
         try {
-            if ( !readNextExpr(expr) ) break; // exit
+            if ( !readNextLine(expr) ) break;   // 讀取到exit結束
         }
         catch ( const char *msg ) {
             cout << msg;
-            break; // EOF
+            break;  // 讀取到EOF結束
         }
     }
+
     cout << "\nThanks for using OurScheme!" << endl;
     cout.flush(); // 避免緩衝區輸出並未顯示
 }
 
-void Reader::readNextLine(string &expr) {
-    // 讀取下一行
-    do {
-        if ( !getline(cin, expr) ) throw "ERROR (no more input) : END-OF-FILE encountered";
-    } while ( expr.empty() ); // 該行並未輸入資料
-    cout << "You entered: " << expr << endl;
-
-}
-
-bool Reader::readNextExpr(string &expr) {
-    // 讀取下一個S-expression
-    cout << "readNextExpr" << endl;
+bool Reader::readNextLine(string &expr) {
+    // 用來讀取下一行輸入的資料
+    // 若遇到EOF則拋出例外
     int left_paren = 0; // 紀錄左括弧數量
-    try {
-        readNextLine(expr);
-    }
-    catch ( const char *msg ) {
-        throw msg;
-    }
-    if ( expr == "(exit)" ) return false;
-    saperateExprToToken(expr, left_paren);
-    return true; 
+
+    do {
+        if ( !getline(cin, expr) ) throw "ERROR (no more input) : END-OF-FILE encountered"; // 讀到EOF
+    } while ( expr.empty() );   // 該行並未輸入資料
+
+    cout << "You entered: " << expr << endl;    // debug
+    if ( expr == "(exit)" ) return false;   // exit
+    saperateExprToToken(expr, left_paren);  // 將輸入的S-expression分割成Token
+
+    return true;
+
 }
 
 void Reader::saperateExprToToken(string &expr, int &left_paren) {
-   // cout << "saperateExprToToken" << endl; // debug
+    // cout << "saperateExprToToken" << endl; // debug
     int nil = 0; // 判斷是否為空括弧
     int line = 0, column = 0; // 紀錄目前字元位置
     bool str = false, backslash = false, annotation = false; // 判斷是否為字串與反斜線或註解
@@ -200,12 +205,16 @@ void Reader::saperateExprToToken(string &expr, int &left_paren) {
                 token.clear();
                 str = false;
             }
-            else str = true;
+            else {
+                str = true;
+                backslash = false;
+            }
         } 
         else {
             if ( c == '\\') backslash = true; // 遇到反斜線
             else backslash = false;
             token += c;
+            ++nil;
             ++column;
         }
     }
@@ -246,7 +255,7 @@ void Reader::storeTokenInAST(string &token) {
     // cout << "stroeTokenInAST" << endl; // debug
     // 確認Token型態並更新其內容
     string type = "SYMBOL";
-    function.checkTypeOfToken(token, type);
+    function.checkTypeOfAtom(token, type);
     cout << "token: " << token << " " << type << endl; // debug
 
     if ( token == "." ) {
@@ -312,6 +321,7 @@ void Reader::storeTokenInAST(string &token) {
 }
 
 Function::Function() {
+    atom = Atom();
     cout << "Function created" << endl;
 }
 
@@ -319,54 +329,68 @@ Function::~Function() {
     cout << "Function destroyed" << endl;
 }
 
-void Function::checkTypeOfToken(string &token, string &type) {
-    // 分辨Token的型態
+void Function::checkTypeOfAtom(string &atom, string &type) {
+    /*檢查Token型態，並將設定其型態*/
     // cout << "checkTypeOfToken" << endl; // debug
-    if ( isINT(token) ) type = "INT";
-    else if ( isDOT(token) ) type = "DOT";
-    else if ( isSTRING(token) ) type = "STRING";
-    else if ( isFLOAT(token) ) type = "FLOAT";
-    else if ( isNIL(token) ) type = "NIL";
-    else if ( isT(token) ) type = "T";
-    else if ( isQUOTE(token) ) type = "QUOTE";
+    if ( this->atom.isINT(atom) ) type = "INT";
+    else if ( this->atom.isSTRING(atom) ) type = "STRING";
+    else if ( this->atom.isDOT(atom) ) type = "DOT";
+    else if ( this->atom.isFLOAT(atom) ) type = "FLOAT";
+    else if ( this->atom.isNIL(atom) ) type = "NIL";
+    else if ( this->atom.isT(atom) ) type = "T";
+    else if ( this->atom.isQUOTE(atom) ) type = "QUOTE";
     else type = "SYMBOL";
 }
 
-bool Function::isINT(string &token) {
-    /*檢查Token是否為整數*/
-    int len = token.size();
+Atom::Atom() {
+    // cout << "Atom created" << endl;  // debug
+}
+
+Atom::~Atom() {
+    // cout << "Atom destroyed" << endl;    // debug
+}
+
+bool Atom::isINT(string &atom) {
+    /*檢查Atom是否為整數，並依其正負更改其顯示*/
+    int len = atom.size();
+    bool interger = false;
     string num;
 
     for ( int i = 0; i < len; ++i ) {
         // 數字開頭可以有正負號
-        if ( i == 0 && (token[i] == '+' || token[i] == '-') ) {
-            if ( token[i] == '-' ) num += '-';
+        if ( i == 0 && (atom[i] == '+' || atom[i] == '-') ) {
+            if ( atom[i] == '-' ) num += '-';
             continue;
         }
-        else if ( !isdigit(token[i]) ) return false;
-        else num += token[i];
+        else if ( !isdigit(atom[i]) ) return false; // 若含非數字字元，則不為整數
+        else {
+            num += atom[i];
+            interger = true;
+        }
     }
 
-    token = num;
+    if ( !interger ) return false;  // 若不含數字，則不為整數
+    atom = num;
     return true;
 }
 
-bool Function::isDOT(string &token) {
-    /*檢查Token是否為點*/
-    int len = token.size();
-    if ( len == 1 && token[0] == '.' ) return true;
+bool Atom::isDOT(string &atom) {
+    /*檢查Atom是否為點*/
+    if ( atom.size() == 1 && atom[0] == '.' ) return true;  // 若Atom僅含點一個字元，則為點
     return false;
 }
 
-bool Function::isSTRING(string &token) {
-    /*檢查Token是否為字串*/
-    if ( token[0] != '\"' ) return false;
+bool Atom::isSTRING(string &atom) {
+    /*檢查Atom是否為字串，並依照其函數更新字串內容*/
+    if ( atom[0] != '\"' ) return false;
     string rebuild = "";
     bool backslash = false;
-    for ( auto &c : token ) {
-        if ( c == '\\' && !backslash ) backslash = true;
+
+    for ( auto &c : atom ) {
+        if ( c == '\\' && !backslash ) backslash = true; // 遇到反斜線
         else {
             if ( backslash ) {
+                // 若前一位為反斜線，則將其形成的函數進行轉換
                 switch (c)
                 {
                 case 'n':
@@ -386,46 +410,48 @@ bool Function::isSTRING(string &token) {
                     rebuild += c;
                     break;
                 }
+                backslash = false;
             }
             else rebuild += c;
-            backslash = false;
         }
     }
-    token = rebuild;
+    atom = rebuild;
     return true;
 }
 
-bool Function::isFLOAT(string &token) {
-    /*檢查Token是否為浮點數*/
-    int len = token.size(), decimal = 0;
+bool Atom::isFLOAT(string &atom) {
+    /*檢查Atom是否為浮點數，並取浮點數後三位*/
+    int len = atom.size(), decimal = 0;
     string num;
     bool dot = false, interger = false, round = false;
 
     for ( int i = 0; i < len; ++i ) {
         // 數字開頭可以有正負號
-        if ( i == 0 && (token[i] == '+' || token[i] == '-') ) {
-            if ( token[i] == '-' ) num += '-';
+        if ( i == 0 && (atom[i] == '+' || atom[i] == '-') ) {
+            if ( atom[i] == '-' ) num += '-';
             continue;
         }
-        else if ( !isdigit(token[i]) ) {
-            if ( token[i] == '.' && !dot ) {
+        else if ( !isdigit(atom[i]) ) {
+            if ( atom[i] == '.' && !dot ) {
                 dot = true;
                 if ( !interger ) num += '0'; // 若並未輸入整數位，則補0
                 num += '.';
             }
-            else return false;
+            else return false; // 若含非數字或點字元，則不為浮點數
         }
         else {
             if ( decimal >= 3 ) {
                 // 小數點後最多3位
-                if ( decimal == 3 && token[i] >= '5' ) round = true; // 四捨五入
+                if ( decimal == 3 && atom[i] >= '5' ) round = true; // 四捨五入
+                ++decimal;
                 continue;
             } 
-            num += token[i];
+            num += atom[i];
             interger = true;
             if ( dot ) ++decimal; // 計算小數位數
         }
     }
+
     if ( !interger ) return false; // 若不含數字，則不為浮點數
 
     while ( decimal < 3 ) {
@@ -434,32 +460,32 @@ bool Function::isFLOAT(string &token) {
         ++decimal;
     }
     if ( round ) num[num.size() - 1] += 1; // 四捨五入
-    token = num;
+    atom = num;
     return true;
 }
 
-bool Function::isNIL(string &token) {
-    /*檢查Token是否為空*/
-    if ( token == "nil" || token == "#f" ) {
-        token = "nil";
+bool Atom::isNIL(string &atom) {
+    /*檢查Atom是否為空，並修改其內容*/
+    if ( atom == "nil" || atom == "#f" ) {
+        atom = "nil";
         return true;
     }
     return false;
 }
 
-bool Function::isT(string &token) {
-    /*檢查Token是否為T*/
-    if ( token == "t" || token == "#t" ) {
-        token = "#t";
+bool Atom::isT(string &atom) {
+    /*檢查Atom是否為T，並修改其內容*/
+    if ( atom == "t" || atom == "#t" ) {
+        atom = "#t";
         return true;
     }
     return false;
 }
 
-bool Function::isQUOTE(string &token) {
-    /*檢查Token是否為引號*/
-    if ( token == "'" ) {
-        token = "quote";
+bool Atom::isQUOTE(string &atom) {
+    /*檢查Atom是否為引號，並修改其內容*/
+    if ( atom == "'" ) {
+        atom = "quote";
         return true;
     }
     return false;
