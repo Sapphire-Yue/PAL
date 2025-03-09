@@ -50,6 +50,7 @@ class Function {
         void storeTokenInAST(string &token, int &line, int &column);
         void newExpression();
         void backExpression();
+        void quoteExpression();
         bool checkExit();
         void optimizeAST();
         void leafToRoot(ASTNode *root, int level);
@@ -58,7 +59,8 @@ class Function {
         ASTNode *root;
         ASTNode *cur;
         vector<ASTNode*> ast;
-        bool dot, quote;
+        bool dot;
+        int quote;
         Atom atom;
         string input;
         stack<pair<ASTNode*, int>> st;
@@ -188,8 +190,9 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         }
         else if ( !str && c == '\'' ) {
             // 遇到引號，將quote存入AST
-            token = "'";
             try {
+                if ( !token.empty() ) function.storeTokenInAST(token, line, column);
+                token = "'";
                 function.storeTokenInAST(token, line, column);
             }
             catch ( const std::runtime_error &msg ) {
@@ -289,13 +292,13 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
     cout << "cur: " << cur->value << " " << cur->type << endl; // debug
     // cout << "dot: " << dot << endl; // debug
     
-    if ( cur->type != LEFT_PAREN && cur->type != TEMP && cur->type != BEGIN ) {
+    if ( cur->type != LEFT_PAREN && cur->type != TEMP && cur->type != BEGIN && cur->type != "QUOTE_TEMP" ) {
         string error = "ERROR (unexpected token) : ')' expected when token at Line " + to_string(line) + " Column " + to_string(column - token.size() + 1) + " is >>" + token + "<<\n";
         throw std::runtime_error(error); 
     }
     if ( type == DOT ) {
         // 若該token為DOT，則下一個token為另一個S-expression
-        if ( cur->type == BEGIN || cur->type == LEFT_PAREN || quote || dot ) {
+        if ( cur->type == BEGIN || cur->type == LEFT_PAREN || dot ) {
             // 前方並未存在S-expression
             string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column - 1) + " is >>" + token + "<<\n";
             throw std::runtime_error(error);
@@ -304,12 +307,12 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         return;
     }
     else if ( type == QUOTE ) {
-        newExpression();
-        quote = true;
+        quoteExpression();
+        ++quote;
         // Quote後面將接上另一個S-Expression
     }
-    else if ( token == "nil"  && ( cur->value == "(" || cur->value == ".(" || dot ) ) {
-        if ( token == "nil" && cur->value == "(" ) {
+    else if ( (token == "nil" || token == ")")  && ( cur->value == "(" || cur->value == ".(" || dot ) ) {
+        if ( token == ")" && cur->value == "(" ) {
             cur->type = NIL; // 左右括弧成立，則該位置為nil
             cur->value = "nil"; 
 
@@ -323,7 +326,7 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
             dot = false;
         }
         else {
-            if ( cur->type == TEMP ) 
+            if ( cur->type == TEMP || cur->type == "QUOTE_TEMP" ) 
                 cur->type = LINK; // debug
 
             ASTNode *new_node = new ASTNode();
@@ -339,7 +342,6 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
             // 預設該位置為AST結尾節點
             cur->type = TEMP;
         }
-        quote = false;
         return;
     }
 
@@ -375,15 +377,21 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         return;
     }
     // 將新節點存入AST，並更新目前節點位置
-    if ( cur->type == TEMP ) 
+    if ( cur->type == TEMP || cur->type == "QUOTE_TEMP" ) 
         cur->type = LINK; // debug
-    if ( type != QUOTE ) quote = false;
     cur->left = new_node;
     cur->right = new ASTNode();
     cur = cur->right;
 
     // 預設該位置為AST結尾節點
     cur->type = TEMP;
+    
+    if ( type != QUOTE && quote > 0 && !ast.empty() && ast.back()->type == "QUOTE_TEMP" ) {
+        // 若前一個S-expression結束，且上一個節點為END，則再回到上一個S-expression
+        cur->type = END;
+        backExpression();
+        if ( ast.empty() ) printAST();
+    }
 }
 
 Function::Function() {
@@ -409,6 +417,7 @@ void Function::newAST() {
     cur = root;
     root->type = BEGIN;
     root->value = "";
+    ast.clear();
     dot = false;
     quote = false;
 }
@@ -612,7 +621,7 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
     if ( !nil && token.empty() ) {
         // 遇到空括弧，將nil存入AST
         cout << "nil" << endl;
-        token = "nil";
+        token = ")";
         function.storeTokenInAST(token, line, column);
         ++nil;
         token.clear();
@@ -663,14 +672,16 @@ void Function::newExpression() {
         // 前方並未存在S-expression
         cur->type = LEFT_PAREN;
         cur->value = "(";
+        cur->right = new ASTNode();
+        cur->right->type = TEMP;
         ast.push_back(cur->right);
         return;
     }
     
-    if ( cur->type != LEFT_PAREN ) cur->type = LINK; // debug
     cur->left = new ASTNode();
     cur->right = new ASTNode();
     cur->right->type = TEMP; // 預設該位置為AST結尾節點
+    if ( cur->type != LEFT_PAREN ) cur->type = TEMP; // debug
     ast.push_back(cur->right); // 留存前一個S-expression目前的結尾節點
     
     cur = cur->left;   // 新的S-expression起點
@@ -682,9 +693,34 @@ void Function::backExpression() {
     // cout << "backExpression" << endl; // debug
     // 跳出外圈S-expression的位置，因該內部S-expression以結束
     // 須回到上層AST結尾節點
-    if ( cur->type == TEMP ) cur->type = END; // debug
-    cur = ast.back();
-    ast.pop_back();
+    do {
+        if ( cur->type == TEMP || cur->type == "QUOTE_TEMP" ) cur->type = END; // debug
+        if ( cur->type == "QUOTE_TEMP" ) --quote;
+        cur = ast.back();
+        ast.pop_back();
+    } while ( !ast.empty() && ast.back()->type == "QUOTE_TEMP" );
+}
+
+void Function::quoteExpression() {
+
+    if ( cur->type == BEGIN ) {
+        // 前方並未存在S-expression
+        cur->type = LEFT_PAREN;
+        cur->value = "(";
+        cur->right = new ASTNode();
+        cur->right->type = "QUOTE_TEMP";
+        ast.push_back(cur->right);
+        return;
+    }
+
+    cur->left = new ASTNode();
+    cur->right = new ASTNode();
+    cur->right->type = "QUOTE_TEMP";
+    ast.push_back(cur->right); // 留存前一個S-expression目前的結尾節點
+
+    cur = cur->left;   // 新的S-expression起點
+    cur->type = "LEFT_PAREN";
+    cur->value = "(";
 }
 
 bool Function::printAST() {
@@ -700,7 +736,7 @@ bool Function::printAST() {
         ASTNode *cur = st.top().first;
         string direction = st.top().second;
         st.pop();
-        if ( cur->type != LINK && cur->value != ".(" ) {
+        if ( cur->type != LINK && cur->type != TEMP && cur->type != "QUOTE_TEMP" && cur->value != ".(" ) {
             if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
             if ( !beforeIsParen ) {
                 if ( direction == "right" && cur->type != END && cur->value != "(" ) {
