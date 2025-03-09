@@ -48,7 +48,7 @@ class Function {
         void newAST();
         void checkTypeOfAtom(string &atom, string &type);
         void storeTokenInAST(string &token, int &line, int &column);
-        void newExpression();
+        void newExpression(int &line, int &column);
         void backExpression();
         void quoteExpression();
         bool checkExit();
@@ -170,10 +170,15 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
     for ( auto &c : expr ) {
         ++column;
         if ( !line ) ++line;
-        if ( c != ' ' ) lineAreNotEmpty = true;
+        if ( c != ' ' && c != ';' ) lineAreNotEmpty = true;
         if ( !str && c == '(' ) {
             ++left_paren;
-            separtor.leftParen(token, line, column);
+            try {
+                separtor.leftParen(token, line, column);
+            }
+            catch ( const std::runtime_error &msg ) {
+                throw msg;
+            }
             nil = 0;
         }
         else if ( !str && c == ')' ) {
@@ -205,6 +210,8 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
             if ( token.empty() ) continue;
             try {
                 function.storeTokenInAST(token, line, column);
+                if ( line == 0 ) line = 1;
+                if ( column == 0 ) column = 1;
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -255,14 +262,11 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
     if ( str ) {
         // 若字串在該行未結束，則拋出錯誤
         string error = "ERROR (no closing quote) : END-OF-LINE encountered at Line " + to_string(line) + " Column " + to_string(column + 1) + "\n";
-        cout << error;
-        left_paren = 0;
-        function.newAST();
-        cout << "\n> ";
-        return;
+        throw std::runtime_error(error);
     }
     else if ( !token.empty() ) {
         try {
+            ++column;
             function.storeTokenInAST(token, line, column);
         }
         catch ( const std::runtime_error &msg ) {
@@ -293,7 +297,7 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
     // cout << "dot: " << dot << endl; // debug
     
     if ( cur->type != LEFT_PAREN && cur->type != TEMP && cur->type != BEGIN && cur->type != "QUOTE_TEMP" ) {
-        string error = "ERROR (unexpected token) : ')' expected when token at Line " + to_string(line) + " Column " + to_string(column - token.size() + 1) + " is >>" + token + "<<\n";
+        string error = "ERROR (unexpected token) : ')' expected when token at Line " + to_string(line) + " Column " + to_string(column - token.size()) + " is >>" + token + "<<\n";
         throw std::runtime_error(error); 
     }
     if ( type == DOT ) {
@@ -607,18 +611,31 @@ void Separator::leftParen(string &token, int &line, int &column) {
         function.storeTokenInAST(token, line, column);
         token.clear();
     }
-    function.newExpression();
+    try {
+        function.newExpression(line, column);
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
 }
 
 void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, int &column) {
     // cout << "rightParen" << endl;    // debug
     // 遇見右括弧，即結束該S-expression
-    if ( (function.getDot() && token.empty()) || left_paren < 0 ) {
+    if ( !token.empty() ) {
+        // 遇到右括弧時，還有資料未寫入AST
+        function.storeTokenInAST(token, line, column);
+        if ( line == 0 ) line = 1;
+        if ( column == 0 ) column = 1;
+    }
+    token.clear();
+
+    if ( function.getDot() || left_paren < 0 ) {
         // 若左括弧為0，則該右括弧為錯誤
         string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>)<<\n";
         throw std::runtime_error(error);
     }
-    if ( !nil && token.empty() ) {
+    else if ( !nil && token.empty() ) {
         // 遇到空括弧，將nil存入AST
         cout << "nil" << endl;
         token = ")";
@@ -637,12 +654,11 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
         function.backExpression();
         return; // 左右括弧只為單一Atom，該S-expression可能並未結束
     }
-    else if ( !token.empty() ) {
-        // 遇到右括弧時，還有資料未寫入AST
-        function.storeTokenInAST(token, line, column);
+
+    if ( function.getDot() ) {
+        string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>)<<\n";
+        throw std::runtime_error(error);
     }
-    token.clear();
-    // cur->type = ")"; // 其中一個S-expression的結尾
     
     // 該S-expression結束，回到上一個S-expression
     function.backExpression();
@@ -656,9 +672,14 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
     }
 }
 
-void Function::newExpression() {
+void Function::newExpression(int &line, int &column) {
     // cout << "newExpression" << endl; // debug
     // 遇見新的左括弧，即產生新的Exprssion
+    if ( cur->type == LINK ) {
+        // 走到以連結位置
+        string error = "ERROR (unexpected token) : ')' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>(<<\n";
+        throw std::runtime_error(error); 
+    } 
 
     if ( dot ) {
         // dot後面將接上另一個具有括弧的S-Expression
