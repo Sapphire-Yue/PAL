@@ -48,6 +48,7 @@ class Function {
         void newAST();
         void checkTypeOfAtom(string &atom, string &type);
         void storeTokenInAST(string &token, int &line, int &column);
+        void checkTokenToStore(string &token, int &line, int &column, char &sep);
         void newExpression(int &line, int &column);
         void backExpression();
         void quoteExpression();
@@ -58,7 +59,7 @@ class Function {
     private:
         ASTNode *root;
         ASTNode *cur;
-        vector<ASTNode*> ast;
+        stack<ASTNode*> ast;
         bool dot;
         int quote;
         Atom atom;
@@ -113,7 +114,7 @@ void Reader::read() {
     cout << "Welcome to OurScheme!" << endl;
     cout << "\n> ";
     string expr;
-    left_paren = 0; // 預設左括弧為0
+    left_paren = 0; // 預設左括弧為 0
     int line = 0, nil = 0;    // 紀錄行數
 
     while ( true ) {
@@ -132,8 +133,8 @@ void Reader::read() {
 }
 
 bool Reader::readNextLine(string &expr, int &line, int &nil) {
-    // 用來讀取下一行輸入的資料
-    // 若遇到EOF則拋出例外
+    /*  讀取下一行輸入的資料
+        若遇到EOF則拋出例外 */
 
     if ( !getline(cin, expr) ) throw "ERROR (no more input) : END-OF-FILE encountered"; // 讀到EOF
     ++line;    // 紀錄行數
@@ -145,6 +146,7 @@ bool Reader::readNextLine(string &expr, int &line, int &nil) {
     catch ( const std::runtime_error &msg ) {
         cerr << msg.what();
         cout << "\n> ";
+        // 因錯誤而結束該S-expression，重新讀取下一行時需全部清空
         line = 0;
         left_paren = 0;
         function.newAST();
@@ -163,10 +165,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
     int column = 0; // 紀錄目前字元位置
     bool str = false, backslash = false, annotation = false, lineAreNotEmpty = false; // 判斷是否為字串與反斜線或註解、該行行數是否需要被算入下一筆Token
     string token;
-    if ( expr[0] == ';' ) {
-        return; // 該行為註解
-        --line;
-    }
+
     for ( auto &c : expr ) {
         ++column;
         if ( !line ) ++line;
@@ -174,6 +173,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         if ( !str && c == '(' ) {
             ++left_paren;
             try {
+                function.checkTokenToStore(token, line, column, c);
                 separtor.leftParen(token, line, column);
             }
             catch ( const std::runtime_error &msg ) {
@@ -184,6 +184,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( !str && c == ')' ) {
             --left_paren;
             try {
+                function.checkTokenToStore(token, line, column, c);
                 separtor.rightParen(token, nil, left_paren, line, column);
             }
             catch ( const std::runtime_error &msg ) {
@@ -296,13 +297,13 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
     cout << "cur: " << cur->value << " " << cur->type << endl; // debug
     // cout << "dot: " << dot << endl; // debug
     
-    if ( cur->type != LEFT_PAREN && cur->type != TEMP && cur->type != BEGIN && cur->type != "QUOTE_TEMP" ) {
+    if ( cur->type != BEGIN && cur->type != LEFT_PAREN && cur->type != TEMP && cur->type != "QUOTE_TEMP" ) {
         string error = "ERROR (unexpected token) : ')' expected when token at Line " + to_string(line) + " Column " + to_string(column - token.size()) + " is >>" + token + "<<\n";
         throw std::runtime_error(error); 
     }
     if ( type == DOT ) {
         // 若該token為DOT，則下一個token為另一個S-expression
-        if ( cur->type == BEGIN || cur->type == LEFT_PAREN || dot ) {
+        if ( cur->type == BEGIN || cur->type == LEFT_PAREN || dot || ast.top()->type == "QUOTE_TEMP" ) {
             // 前方並未存在S-expression
             string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column - 1) + " is >>" + token + "<<\n";
             throw std::runtime_error(error);
@@ -315,30 +316,34 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         ++quote;
         // Quote後面將接上另一個S-Expression
     }
-    else if ( (token == "nil" || token == ")")  && ( cur->value == "(" || cur->value == ".(" || dot ) ) {
+    else if ( (token == "nil" || token == ")")  && ( cur->value == "(" || cur->value == "DOT_LEFT_PAREN" || dot ) ) {
         if ( token == ")" && cur->value == "(" ) {
-            cur->type = NIL; // 左右括弧成立，則該位置為nil
+            // 左右括弧內部資料空成立，則該位置為 nil
+            cur->type = NIL; 
             cur->value = "nil"; 
-
+            // 為葉節點
             cur->left = NULL;
             cur->right = NULL;
         }
-        else if ( cur->value == ".(" || dot ) {
-            // 將nil存在右子樹，則不需儲存
+        else if ( cur->value == "DOT_LEFT_PAREN" || dot ) {
+            // nil 將存在右子樹，則不需儲存
             cur->value = "nil";
             cur->type = END;
             dot = false;
         }
         else {
+            // 輸入字串 nil or #f
             if ( cur->type == TEMP || cur->type == "QUOTE_TEMP" ) 
                 cur->type = LINK; // debug
 
             ASTNode *new_node = new ASTNode();
             new_node->value = token;
             new_node->type = type;
+            // 為葉節點
             new_node->left = NULL;
             new_node->right = NULL;
 
+            // 將新節點存入AST，並更新目前節點位置
             cur->left = new_node;
             cur->right = new ASTNode();
             cur = cur->right;
@@ -390,11 +395,14 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
     // 預設該位置為AST結尾節點
     cur->type = TEMP;
     
-    if ( type != QUOTE && quote > 0 && !ast.empty() && ast.back()->type == "QUOTE_TEMP" ) {
+    if ( type != QUOTE && quote > 0 && !ast.empty() && ast.top()->type == "QUOTE_TEMP" ) {
         // 若前一個S-expression結束，且上一個節點為END，則再回到上一個S-expression
         cur->type = END;
         backExpression();
-        if ( ast.empty() ) printAST();
+        if ( ast.empty() ) {
+            printAST();
+            line = 0, column = 0;
+        }
     }
 }
 
@@ -418,24 +426,22 @@ void Function::newAST() {
     // 建立新的AST
     delete root;
     root = new ASTNode();
-    cur = root;
     root->type = BEGIN;
     root->value = "";
-    ast.clear();
+    cur = root;
     dot = false;
     quote = false;
 }
 
 bool Function::checkExit() {
-    // cout << "checkExit" << endl; // debug
-    // 檢查是否為exit
-    if ( root->left->value == "exit" && root->right->type == END ) return true;
+    // 檢查是否為exit的AST定義
+    if ( root->left == NULL || root->right == NULL ) return false;  // 避免單一 Atom 的 S-expression 造成錯誤
+    else if ( root->left->value == "exit" && root->right->type == END ) return true;
     return false;
 }
 
 void Function::checkTypeOfAtom(string &atom, string &type) {
     /*檢查Token型態，並將設定其型態*/
-    // cout << "checkTypeOfToken" << endl; // debug
     if ( this->atom.isINT(atom) ) type = INT;
     else if ( this->atom.isSTRING(atom) ) type = STRING;
     else if ( this->atom.isDOT(atom) ) type = DOT;
@@ -444,6 +450,23 @@ void Function::checkTypeOfAtom(string &atom, string &type) {
     else if ( this->atom.isT(atom) ) type = T;
     else if ( this->atom.isQUOTE(atom) ) type = QUOTE;
     else type = SYMBOL;
+}
+
+void Function::checkTokenToStore(string &token, int &line, int &column, char &sep) {
+    /* 在 seperater 使用前，檢查 Token 是否蘊含先前讀入的資料
+        若有，則將該資料存入 AST，無論如何，皆會將 Token 改為使其分割的 Seperator */
+    if ( !token.empty() ) {
+        try {
+            storeTokenInAST(token, line, column);
+        }
+        catch ( const std::runtime_error &msg ) {
+            throw msg;
+        }
+        if ( line == 0 ) line = 1;  // 若儲存完即輸出，若該行讀入還有資料，則須設定行數為 1
+        if ( column == 0 ) column = 1;  // 若儲存完即輸出，若該行讀入還有資料，則須設定列數為 1
+    }
+    token = sep;
+
 }
 
 Atom::Atom() {
@@ -604,13 +627,8 @@ Separator::~Separator() {
 }
 
 void Separator::leftParen(string &token, int &line, int &column) {
-    // cout << "leftParen" << endl; // debug
-    // 遇見新的左括弧，即產生新的Exprssion
-    if ( !token.empty() ) {
-        // 遇到左括弧時，還有資料未寫入AST
-        function.storeTokenInAST(token, line, column);
-        token.clear();
-    }
+    /* 當遇見新的左括弧，即產生新的Exprssion */
+    token.clear();
     try {
         function.newExpression(line, column);
     }
@@ -620,164 +638,145 @@ void Separator::leftParen(string &token, int &line, int &column) {
 }
 
 void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, int &column) {
-    // cout << "rightParen" << endl;    // debug
-    // 遇見右括弧，即結束該S-expression
-    if ( !token.empty() ) {
-        // 遇到右括弧時，還有資料未寫入AST
-        function.storeTokenInAST(token, line, column);
-        if ( line == 0 ) line = 1;
-        if ( column == 0 ) column = 1;
-    }
-    token.clear();
-
+    /*  遇見右括弧，可能為
+        1: 結束該S-expression -> 若剛好使用完左括弧，及輸出結果，反之則回到外層 S-expression
+        2: nil
+    */
     if ( function.getDot() || left_paren < 0 ) {
-        // 若左括弧為0，則該右括弧為錯誤
-        string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>)<<\n";
+        // 若左括弧不存在或前一個資料為 DOT ，則該右括弧為錯誤
+        string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>" + token + "<<\n";
         throw std::runtime_error(error);
     }
-    else if ( !nil && token.empty() ) {
-        // 遇到空括弧，將nil存入AST
-        cout << "nil" << endl;
-        token = ")";
+    else if ( !nil ) {
+        // 當括弧內沒有資料時，則該位置為nil
         function.storeTokenInAST(token, line, column);
-        ++nil;
-        token.clear();
-
-        if ( !left_paren ) {
-            // 整個S-expression結束
-            line = 0, column = 0; // 重新另一個S-expression
-            function.optimizeAST(); //debug
-            //function.printAST();
-            return;
-        }
-
-        function.backExpression();
-        return; // 左右括弧只為單一Atom，該S-expression可能並未結束
-    }
-
-    if ( function.getDot() ) {
-        string error = "ERROR (unexpected token) : atom or '(' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>)<<\n";
-        throw std::runtime_error(error);
+        ++nil;  // 外層括弧並不為空
     }
     
-    // 該S-expression結束，回到上一個S-expression
+    // 若該 S-expression 結束，回到外層 S-expression
     function.backExpression();
     
     if ( !left_paren ) {
-        // 整個S-expression結束
+        // 整筆 S-expression 結束
         if ( function.checkExit() ) throw "Exit"; // 若為exit，則結束
-        line = 0, column = 0; // 重新另一個S-expression
         function.optimizeAST(); //debug
         //function.printAST();
+        line = 0, column = 0; // 重新另一個S-expression
     }
+    token.clear();
+
 }
 
 void Function::newExpression(int &line, int &column) {
-    // cout << "newExpression" << endl; // debug
-    // 遇見新的左括弧，即產生新的Exprssion
+    /* 遇見新的左括弧，即產生新的Exprssion
+        左括弧永遠是在每個 S-expression 的根節點*/
     if ( cur->type == LINK ) {
-        // 走到以連結位置
+        // 走到已連結位置，即走入前後都有資料的位置，故缺少右括弧
+        // 右子樹結束，於同一層卻又遇到左括弧，即為錯誤
         string error = "ERROR (unexpected token) : ')' expected when token at Line " + to_string(line) + " Column " + to_string(column) + " is >>(<<\n";
         throw std::runtime_error(error); 
     } 
 
     if ( dot ) {
-        // dot後面將接上另一個具有括弧的S-Expression
-        cur->value = ".(";
-        ast.push_back(cur); 
+        // dot後面將接上另一個具有括弧的S-Expression，則該 S-expression 與前一個 S-expression 屬於相同的層級
+        cur->value = "DOT_LEFT_PAREN";
+        ast.push(cur); 
         dot = false;
         return;
     }
 
     if ( cur->type == BEGIN ) {
-        // 前方並未存在S-expression
+        // 該 S-expression 的第一個位置，即 AST 的根節點
         cur->type = LEFT_PAREN;
         cur->value = "(";
         cur->right = new ASTNode();
         cur->right->type = TEMP;
-        ast.push_back(cur->right);
+        ast.push(cur->right);
         return;
     }
-    
+    // 外層有 S-expression，則在其內部建立新的 S-expression
     cur->left = new ASTNode();
     cur->right = new ASTNode();
-    cur->right->type = TEMP; // 預設該位置為AST結尾節點
-    if ( cur->type != LEFT_PAREN ) cur->type = TEMP; // debug
-    ast.push_back(cur->right); // 留存前一個S-expression目前的結尾節點
+    cur->right->type = TEMP; // 該位置為對外層 S-expression 的下一個 AST 寫入節點
+    if ( cur->type != LEFT_PAREN ) cur->type = LINK; // debug
+    ast.push(cur->right); // 留存前一個S-expression目前的結尾節點
     
     cur = cur->left;   // 新的S-expression起點
     cur->type = "LEFT_PAREN";
     cur->value = "(";
+
 }
 
 void Function::backExpression() {
-    // cout << "backExpression" << endl; // debug
-    // 跳出外圈S-expression的位置，因該內部S-expression以結束
-    // 須回到上層AST結尾節點
+    /*  跳出外圈S-expression的位置，因該內部S-expression以結束
+        須回到上層AST結尾節點，需跳出至外層不為 QUOTE S-expression 或沒有更外層 */
     do {
-        if ( cur->type == TEMP || cur->type == "QUOTE_TEMP" ) cur->type = END; // debug
-        if ( cur->type == "QUOTE_TEMP" ) --quote;
-        cur = ast.back();
-        ast.pop_back();
-    } while ( !ast.empty() && ast.back()->type == "QUOTE_TEMP" );
+        if ( cur->type == TEMP || cur->type == "QUOTE_TEMP" ) cur->type = END;  // 為該 S-expression 結尾
+        if ( cur->type == "QUOTE_TEMP" ) --quote; // 跳出外層為 QUOTE 的 S-expression 
+        cur = ast.top();
+        ast.pop();
+    } while ( !ast.empty() && ast.top()->type == "QUOTE_TEMP" );
 }
 
 void Function::quoteExpression() {
-
+    /*  遇到單引號，即內部為另一筆 S-expression 
+        與左括弧相似，需建造樹的新母節點 */
     if ( cur->type == BEGIN ) {
-        // 前方並未存在S-expression
+         // 該 S-expression 的第一個位置，即 AST 的根節點
         cur->type = LEFT_PAREN;
         cur->value = "(";
         cur->right = new ASTNode();
         cur->right->type = "QUOTE_TEMP";
-        ast.push_back(cur->right);
+        ast.push(cur->right);
         return;
     }
-
+    // 外層有 S-expression，則在其內部建立新的 S-expression
     cur->left = new ASTNode();
     cur->right = new ASTNode();
-    cur->right->type = "QUOTE_TEMP";
-    ast.push_back(cur->right); // 留存前一個S-expression目前的結尾節點
-
-    cur = cur->left;   // 新的S-expression起點
-    cur->type = "LEFT_PAREN";
+    cur->right->type = "QUOTE_TEMP"; // 該位置為對外層 S-expression 的下一個 AST 寫入節點
+    ast.push(cur->right); // 留存外層 S-expression 目前的結尾節點
+    // 新的 S-expression 起點
+    cur = cur->left;   
+    cur->type = LEFT_PAREN;
     cur->value = "(";
+
 }
 
 bool Function::printAST() {
-    // 印出AST
+    /* 印出AST */
     if ( root->type == BEGIN ) return false;
-    cout << "printAST" << endl;
     while ( !ast.empty() ) backExpression();
+
     stack<pair<ASTNode*, string>> st;
     st.push({root, ""});
     int left_paren = 0, temp = 0;
     bool beforeIsParen = false;
+
     while ( !st.empty() ) {
         ASTNode *cur = st.top().first;
-        string direction = st.top().second;
+        string direction = st.top().second; // 紀錄該節點為左節點或右節點
         st.pop();
-        if ( cur->type != LINK && cur->type != TEMP && cur->type != "QUOTE_TEMP" && cur->value != ".(" ) {
+        if ( cur->type != LINK && cur->type != TEMP && cur->type != "QUOTE_TEMP" && cur->value != "DOT_LEFT_PAREN" ) {
+            // 除了連結節點外，其他節點皆需印出
             if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
             if ( !beforeIsParen ) {
                 if ( direction == "right" && cur->type != END && cur->value != "(" ) {
+                    // 若該節點為右節點，且內容不為左括弧以及結束節點，則印出點
                     for ( int i = 0; i < left_paren; ++i ) cout << "  ";
                     cout << "." << endl;
                 }
                 for ( int i = 0; i < left_paren; ++i ) cout << "  ";
             }
-                
             else beforeIsParen = false;
 
             if ( cur->value == "(" ) {
                 ++left_paren;
                 cout << cur->value << " ";
-                beforeIsParen = true;
+                beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
             }
             else if ( cur->type == END ) cout << ")" << endl;
             else cout << cur->value << endl;
         }
-        
         // 遍歷子樹
         if ( cur->right ) st.push({cur->right, "right"});
         if ( cur->left ) st.push({cur->left, "left"});
