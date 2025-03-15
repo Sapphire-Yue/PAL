@@ -438,7 +438,7 @@ void Function::checkTokenToStore(string &token, int &line, int &column, char &se
 }
 
 void Function::newExpression(string &token, int &line, int &column) {
-    /* 遇見新的左括弧，即產生新的Exprssion
+    /*  遇見新的左括弧，即產生新的Exprssion
         左括弧永遠是在每個 S-expression 的根節點 */
     string error_str;
     if ( error.unexpectedTokenOfRightParen(cur, token, line, column, error_str, true) ) {
@@ -457,22 +457,22 @@ void Function::newExpression(string &token, int &line, int &column) {
     if ( cur->type == BEGIN ) {
         // 該 S-expression 的第一個位置，即 AST 的根節點
         cur->type = LEFT_PAREN;
-        cur->value = token;
+        cur->value = "(";
         cur->right = new ASTNode();
-        cur->right->type = TEMP;
+        cur->right->type = (token == "(" ? TEMP : "QUOTE_TEMP");
         ast.push(cur->right);
         return;
     }
     // 外層有 S-expression，則在其內部建立新的 S-expression
     cur->left = new ASTNode();
     cur->right = new ASTNode();
-    cur->right->type = TEMP; // 該位置為對外層 S-expression 的下一個 AST 寫入節點
+    cur->right->type = (token == "(" ? TEMP : "QUOTE_TEMP"); // 該位置為對外層 S-expression 的下一個 AST 寫入節點
     if ( cur->type != LEFT_PAREN ) cur->type = LINK; // debug
     ast.push(cur->right); // 留存前一個S-expression目前的結尾節點
     
     cur = cur->left;   // 新的S-expression起點
     cur->type = LEFT_PAREN;
-    cur->value = token;
+    cur->value = "(";
 
 }
 
@@ -490,32 +490,8 @@ void Function::backExpression() {
 void Function::quoteExpression(string &token, int &line, int &column) {
     /*  遇到單引號，即內部為另一筆 S-expression 
         與左括弧相似，需建造樹的新母節點 */
-    string error_str;
-    if ( error.unexpectedTokenOfRightParen(cur, token, line, column, error_str, true) ) {
-        // 檢查是否有缺少右括弧的錯誤
-        throw std::runtime_error(error_str); 
-    }
-
+    newExpression(token, line, column);
     ++quote;    // 計算 QUOTE 的層數
-    if ( cur->type == BEGIN ) {
-         // 該 S-expression 的第一個位置，即 AST 的根節點
-        cur->type = LEFT_PAREN;
-        cur->value = "(";
-        cur->right = new ASTNode();
-        cur->right->type = "QUOTE_TEMP";
-        ast.push(cur->right);
-        return;
-    }
-    // 外層有 S-expression，則在其內部建立新的 S-expression
-    cur->left = new ASTNode();
-    cur->right = new ASTNode();
-    cur->right->type = "QUOTE_TEMP"; // 該位置為對外層 S-expression 的下一個 AST 寫入節點
-    ast.push(cur->right); // 留存外層 S-expression 目前的結尾節點
-    // 新的 S-expression 起點
-    cur = cur->left;   
-    cur->type = LEFT_PAREN;
-    cur->value = "(";
-
 }
 
 bool Function::printAST() {
@@ -532,7 +508,7 @@ bool Function::printAST() {
         ASTNode *cur = st.top().first;
         string direction = st.top().second; // 紀錄該節點為左節點或右節點
         st.pop();
-        if ( cur->type != LINK && cur->type != TEMP && cur->type != "QUOTE_TEMP" && cur->value != "DOT_LEFT_PAREN" ) {
+        if ( cur->type != LINK && cur->type != TEMP && cur->type != "QUOTE_TEMP" ) {
             // 除了連結節點外，其他節點皆需印出
             if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
             if ( !beforeIsParen ) {
