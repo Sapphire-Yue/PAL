@@ -22,9 +22,9 @@ using namespace std;
 #define END "END"
 #define LINK "LINK"
 
-unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr"}, 
+unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?"}, 
                     primitive_predicate{"atom?", "pair?", "list?", "null?", "integer?", "real?", "number?", "string?", "boolean?", "symbol?"},
-                    basic_arithmetic{"+" , "-" , "*" , "/"};
+                    basic_arithmetic{"+" , "-" , "*" , "/", "not", "and", "or", ">", ">=", "<", "<=", "=", "string-append", "string>?", "string<?", "string=?"};
 
 struct ASTNode {
     string type, value;
@@ -85,11 +85,13 @@ class Symbol {
         bool isBoolean(ASTNode *root);
         bool isSymbol(ASTNode *root);
         bool isArithmetic(ASTNode *root, ASTNode *parent);
+        bool isEqual(ASTNode *root, ASTNode *parent);
     private:
         Atom atom;
         Error error;
         bool define;
-        void calculate(ASTNode *root, string &operand, string &result);
+        void calculate(ASTNode *root, string &operand, string &result, bool &first);
+        bool campare(ASTNode *first_element, ASTNode *second_element);
 };
 
 class Function {
@@ -571,7 +573,7 @@ bool Function::printAST() {
         ASTNode *cur = st.top().first;
         string direction = st.top().second; // 紀錄該節點為左節點或右節點
         st.pop();
-        if ( cur->type != LINK && cur->type != TEMP && cur->type != "QUOTE_TEMP" ) {
+        if ( cur->type != LINK && cur->type != TEMP ) {
             // 除了連結節點外，其他節點皆需印出
             if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
             if ( !beforeIsParen ) {
@@ -987,6 +989,7 @@ void Symbol::symbolCheck(ASTNode *root, ASTNode *parent) {
         else if ( isCDR(root, parent) ) cout << "CDR" << endl;
         else if ( checkPrimitivePredicate(root, parent) ) cout << "PRIMITIVE PREDICATE" << endl;
         else if ( isArithmetic(root, parent) ) cout << "BASIC ARITHMETIC" << endl;
+        else if ( isEqual(root, parent) ) cout << "EQUAL" << endl;
         else userDefined(root);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1193,6 +1196,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent) {
             else if ( temp->left->type == SYMBOL ) {
                 // 若為 ATOM 且為 SYMBOL ，則檢查 SYMBOL 是否為定義過的
                 error.checkSymbol(temp->left, false);
+                temp->left = user_map[temp->left->value]; // 將其內容複寫一份進當前 AST
             }
             temp = temp->right;
         }
@@ -1508,7 +1512,7 @@ bool Symbol::isSymbol(ASTNode *root) {
 }
 
 bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
-    /* 檢查該 Symbol 是否為基礎運算式 */
+    /* 檢查該 Symbol 是否為基礎運算式或比較運算式 */
 
     if ( basic_arithmetic.find(root->value) == basic_arithmetic.end() || !parent ) return false;
 
@@ -1516,26 +1520,39 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
     // cout << "arg: " << arg << endl;  // debug
 
     try {
-        if ( arg >= 2 ) {
+        if ( (arg == 1 && root->value == "not") || arg >= 2 ) {
             // 若參數個數小於2，則拋出錯誤
             ASTNode *count_node = parent->right;  // 該位置應該為需計算的 S-expression
-            string result;
-            bool num = false;
+            string result, compare_result = "";
+            bool first = false, compare = false;
             while ( count_node->type != END ) {
                 if ( count_node->left->type == LEFT_PAREN || count_node->left->type == SYMBOL ) {
                     if ( count_node->left->type == LEFT_PAREN ) symbolCheck(count_node->left->left, count_node->left);
                     else symbolCheck(count_node->left, NULL);
                 }
                 // 計算結果
-                if ( !num ) {
-                    // 若為第一個數字，則將其存入結果
-                    result = count_node->left->value;
-                    num = true;
+                calculate(count_node, root->value, result, first);
+                if ( (result == "nil" || result == "#t") && root->value != "or" ) {
+                    // 若結果為 nil 或 #t，則該 function 為比較運算式
+                    compare = true;
+                    if ( result == "nil" )
+                        // 若結果為 nil，則將比較結果設為 false
+                        compare_result = "nil";
+                    else if ( compare_result != "nil" )
+                        // 若結果不為 nil，則將比較結果設為 true
+                        compare_result = "#t";
+                    result = count_node->left->value; // 將當前數字儲存
                 }
-                else calculate(count_node, root->value, result);
 
                 count_node = count_node->right;  // 接續下一個數字
             }
+            if ( root->value == "and" ) {
+                // 若為 and 運算式，且過程中結果並未有 nil，則結果為最後一個元素
+                if ( compare_result == "nil") result = compare_result;
+            }
+            else if ( compare ) result = compare_result; // 若為比較運算式，則將結果設為比較結果
+            
+            // 將結果寫回根節點
             if ( atom.isINT(result) ) {
                 // 若結果為整數，則將其轉為整數
                 parent->type = INT;
@@ -1544,6 +1561,15 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
             else if ( atom.isFLOAT(result) ) {
                 // 若結果為浮點數，則將其轉為浮點數
                 parent->type = FLOAT;
+                parent->value = result;
+            }
+            else if ( atom.isSTRING(result) ) {
+                // 若結果為字串，則將其轉為字串
+                parent->type = STRING;
+                parent->value = result;
+            }
+            else if ( atom.isT(result) || atom.isNIL(result) ) {
+                parent->type = BOOL;
                 parent->value = result;
             }
             // 只將結果留下來，並刪除原本的 S-expression
@@ -1575,11 +1601,25 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
     return true;
 }
 
-void Symbol::calculate(ASTNode *root, string &operand, string &result) {
+void Symbol::calculate(ASTNode *root, string &operand, string &result, bool &first) {
     /* 計算結果 */
-    if ( root->left->type != INT && root->left->type != FLOAT )
+    if ( root->left->type != INT && root->left->type != FLOAT && (operand == "+" || operand == "-" || operand == "*" || operand == "/" || operand == ">" || operand == "<" || operand == ">=" || operand == "<=" || operand == "=" ) )
         // 若左子樹不為數字，則拋出錯誤
         throw root->left;
+    else if ( root->left->type != BOOL && root->left->type != NIL && operand == "not" )
+        // 若左子樹不為布林值，則拋出錯誤
+        throw root->left; 
+    else if ( root->left->type != STRING && (operand == "string-append" || operand == "string>?" || operand == "string<?" || operand == "string=?" ) )
+        // 若左子樹不為字串，則拋出錯誤
+        throw root->left;
+
+    if ( !first ) {
+        // 並未寫入第一筆資料
+        result = root->left->value; // 將當前數字儲存
+        if ( operand == "not" ) result = ( result == "#t" ) ? "nil" : "#t"; // 若為 not，則將結果轉為布林值
+        first = true; // 設定為已寫入第一筆資料
+        return;
+    }
 
     string operate = root->left->value;
 
@@ -1614,5 +1654,110 @@ void Symbol::calculate(ASTNode *root, string &operand, string &result) {
         else
             result = to_string(stof(result) / stof(operate));
     }
+    else if ( operand == "and" && result != "nil" ) {
+        if ( root->left->type != BOOL && root->left->type != NIL ) result = operate;
+        else result = ( operate == "#t" ) ? "#t" : "nil";
+    }
+    else if ( operand == "or" && result == "nil" ) {
+        if ( root->left->type != BOOL && root->left->type != NIL ) result = operate;
+        else result = ( operate == "#t" ) ? "#t" : "nil";
+    }
+    else if ( operand == ">" ) 
+        result = ( stof(result) > stof(operate) ) ? "#t" : "nil";
+    else if ( operand == "<" ) 
+        result = ( stof(result) < stof(operate) ) ? "#t" : "nil";
+    else if ( operand == ">=" ) 
+        result = ( stof(result) >= stof(operate) ) ? "#t" : "nil";
+    else if ( operand == "<=" ) 
+        result = ( stof(result) <= stof(operate) ) ? "#t" : "nil";
+    else if ( operand == "=" ) 
+        result = ( stof(result) == stof(operate) ) ? "#t" : "nil";
+    else if ( operand == "string-append" )
+        // 若為字串相加，則將其轉為字串
+        result = result.substr(0, result.size() - 1) + operate.substr(1, operate.size() - 1); // 去除字串的引號
+    else if ( operand == "string>?" ) 
+        // 若為字串比較，則將其轉為布林值
+        result = ( result > operate ) ? "#t" : "nil";
+    else if ( operand == "string<?" ) 
+        result = ( result < operate ) ? "#t" : "nil";
+    else if ( operand == "string=?" ) 
+        result = ( result == operate ) ? "#t" : "nil";
+}
 
+bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
+    /* 檢查該 AST 是否為 equal */
+    if ( (root->value != "eqv?" && root->value != "equal?") || !parent ) return false;
+
+    int arg = countFunctionArg(parent);   // 計算參數個數
+    // cout << "arg: " << arg << endl;  // debug
+
+    try {
+        if ( arg == 2 ) {
+            // 若參數個數不為2，則拋出錯誤
+            ASTNode *first_element = parent->right->left, *second_element = parent->right->right->left;
+            bool eqv = false, equal = false;
+            if ( first_element->type == STRING || second_element->type == STRING ) eqv = false;
+            else if ( isAtom(first_element) && isAtom(second_element) && first_element->value == second_element->value ) eqv = true;
+            else if ( user_map.find(first_element->value) != user_map.end() && user_map.find(second_element->value) != user_map.end()
+                        && user_map[first_element->value] == user_map[second_element->value] ) 
+                // 若兩者皆為自定義 SYMBOL，且指向內容相同
+                eqv = true;
+    
+            ASTNode *check_node = parent->right;
+            while ( check_node->type != END ) {
+                if ( check_node->left->type == LEFT_PAREN || check_node->left->type == SYMBOL ) {
+                    if ( check_node->left->type == LEFT_PAREN ) symbolCheck(check_node->left->left, check_node->left);
+                    else symbolCheck(check_node->left, NULL);
+                }
+                check_node = check_node->right;  // 接續下一個 S-expression
+            }
+            equal = campare(first_element, second_element); // 檢查兩個 S-expression 是否相同
+            
+            // 將結果寫回根節點
+            if ( root->value == "eqv?" ) {
+                // 若為 eqv?，則將結果設為 eqv 的結果
+                parent->type = BOOL;
+                parent->value = ( eqv ) ? "#t" : "nil";
+            }
+            else if ( root->value == "equal?" ) {
+                // 若為 equal?，則將結果設為 equal 的結果
+                parent->type = BOOL;
+                parent->value = ( equal ) ? "#t" : "nil";
+            }
+            // 只將結果留下來，並刪除原本的 S-expression
+            ASTNode *temp = parent->right;
+            parent->right = NULL;
+            delete temp; // 刪除原本的右子樹
+            temp = parent->left;
+            parent->left = NULL;
+            delete temp; // 刪除原本的左子樹
+        }
+        else {
+            bool checkList = isList(parent->right);
+            if ( !checkList ) {
+                cout << "ERROR (non-list) : ";
+                throw root;
+            }
+            string error_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
+            throw std::runtime_error(error_str);
+        }
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+    
+    return true;
+}
+
+bool Symbol::campare(ASTNode *first_element, ASTNode *second_element) {
+    /* 檢查該 AST 是否為相同 */
+    if ( first_element == NULL && second_element == NULL ) return true;
+    else if ( first_element == NULL || second_element == NULL ) return false;
+
+    if ( first_element->type == END && second_element->type == END ) return true;
+    else if ( first_element->value != second_element->value ) return false;
+    return campare(first_element->left, second_element->left) && campare(first_element->right, second_element->right);
 }
