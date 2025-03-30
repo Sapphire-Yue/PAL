@@ -22,7 +22,7 @@ using namespace std;
 #define END "END"
 #define LINK "LINK"
 
-unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond"}, 
+unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin"}, 
                     primitive_predicate{"atom?", "pair?", "list?", "null?", "integer?", "real?", "number?", "string?", "boolean?", "symbol?"},
                     basic_arithmetic{"+" , "-" , "*" , "/", "not", "and", "or", ">", ">=", "<", "<=", "=", "string-append", "string>?", "string<?", "string=?"};
 
@@ -88,13 +88,14 @@ class Symbol {
         bool isEqual(ASTNode *root, ASTNode *parent);
         bool isIf(ASTNode *root, ASTNode *parent);
         bool isCond(ASTNode *root, ASTNode *parent);
+        bool isBegin(ASTNode *root, ASTNode *parent);
     private:
         Atom atom;
         Error error;
         bool define;
         void calculate(ASTNode *root, string &operand, string &result, bool &first);
         bool campare(ASTNode *first_element, ASTNode *second_element);
-        void conditional(ASTNode **root);
+        void conditional(ASTNode **root, string &operand);
 };
 
 class Function {
@@ -997,6 +998,7 @@ void Symbol::symbolCheck(ASTNode *root, ASTNode *parent) {
         else if ( isEqual(root, parent) ) cout << "EQUAL" << endl;
         else if ( isIf(root, parent) ) cout << "IF" << endl;
         else if ( isCond(root, parent) ) cout << "COND" << endl;
+        else if ( isBegin(root, parent) ) cout << "BEGIN" << endl;
         else userDefined(root);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1779,7 +1781,7 @@ bool Symbol::isIf(ASTNode *root, ASTNode *parent) {
             ASTNode *check_node = parent->right, *temp_root = new ASTNode() ;  // 該位置應該為需運行的 S-expression
             copyTree(temp_root, parent); // 將該 S-expression 複製一份，報錯時使用
             
-            conditional(&check_node); // 運行判別式
+            conditional(&check_node, root->value); // 運行判別式
             if ( !check_node ) {
                 // 判別結果無資料，則報錯
                 cout << "ERROR (no return value) : ";
@@ -1861,7 +1863,7 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
                 if ( !result_statement ) result_statement = check_node->left->right->left; // 若結果不為空，則將其設為結果
                 break;
             }
-            else if ( check_node->left->left->type != NIL ) conditional(&check_node->left); // 運行判別式
+            else if ( check_node->left->left->type != NIL ) conditional(&check_node->left, root->value); // 運行判別式
             else check_node->left = NULL; // 該 S-expression 不須運作
 
             if ( check_node->left && !result_statement )
@@ -1875,7 +1877,21 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
             cout << "ERROR (no return value) : ";
             throw temp_root;
         }
-        
+        ASTNode *temp = result_statement;
+        while ( temp->right && temp->type != END  ) {
+            // 檢查 S-expression 內的每個左子樹
+            if ( temp->left->type == LEFT_PAREN || temp->left->type == SYMBOL ) {
+                if ( temp->left->type == LEFT_PAREN ) symbolCheck(temp->left->left, temp->left);
+                else symbolCheck(temp->left, NULL);
+            }
+            
+            if ( temp->right->type == END ) {
+                // 若為最後一筆 S-expression，則將其設為結果
+                result_statement = temp->left;
+            }
+            temp = temp->right; // 接續下一個 S-expression
+        }
+
         parent->type = result_statement->type;
         parent->value = result_statement->value;
         parent->left = result_statement->left;
@@ -1890,18 +1906,54 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
     return true;
 }
 
-void Symbol::conditional(ASTNode **root) {
+void Symbol::conditional(ASTNode **root, string &operand) {
     /* 檢查該是否回傳 statemet */
-    ASTNode *check_node = *root;  // 該位置應該為需運行的 S-expression
+    ASTNode *check_node = (*root)->left;  // 該位置應該為需運行的 S-expression
 
     try {
-        while ( check_node->type != END ) {
-            if ( check_node->left->type == LEFT_PAREN || check_node->left->type == SYMBOL ) {
-                // 檢查 S-expression 內的每個左子樹
-                if ( check_node->left->type == LEFT_PAREN ) symbolCheck(check_node->left->left, check_node->left);
-                else symbolCheck(check_node->left, NULL);
+        if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
+            // 檢查 S-expression 內的每個左子樹
+            if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node);
+            else symbolCheck(check_node, NULL);
+        }
+
+        bool conditional = true;
+        check_node = (*root)->left;
+        if ( check_node->value == "nil" || check_node->type == STRING )
+            // 若條件為 nil，則將 conditional 設為 false
+            conditional = false;
+
+        ASTNode *first_statement = (*root)->right, *second_statement = (*root)->right->right->left;
+        if ( conditional ) {
+            // 若條件為 true，則將 S-expression 的左子樹設為第一筆 S-expression
+            if ( operand == "cond" ) {
+                // 若為 cond，則直接將該筆資料回傳
+                (*root) = first_statement;
+                return;
             }
-            check_node = check_node->right;  // 接續下一個 S-expression
+            check_node = first_statement->left;
+            if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
+                // 檢查 S-expression 內的每個左子樹
+                if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node);
+                else symbolCheck(check_node, NULL);
+            }
+            (*root) = check_node;
+        }
+        else {
+            if ( !second_statement ) {
+                // 第二筆 S-expression 為空，則回傳空值
+                (*root) = NULL;
+            }
+            else {
+                // 若條件為 false，則將 S-expression 的左子樹設為第二筆 S-expression
+                check_node = second_statement;
+                if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
+                    // 檢查 S-expression 內的每個左子樹
+                    if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node);
+                    else symbolCheck(check_node, NULL);
+                }
+                (*root) = check_node;
+            }
         }
     }
     catch ( const std::runtime_error &msg ) {
@@ -1911,25 +1963,51 @@ void Symbol::conditional(ASTNode **root) {
         throw temp;
     }
     
-    bool conditional = true;
-    check_node = (*root)->left;
-    if ( check_node->value == "nil" || check_node->type == STRING )
-        // 若條件為 nil，則將 conditional 設為 false
-        conditional = false;
+    
+}
 
-    ASTNode *first_statement = (*root)->right->left, *second_statement = (*root)->right->right->left;
-    if ( conditional ) {
-        // 若條件為 true，則將 S-expression 的左子樹設為第一筆 S-expression
-        (*root) = first_statement;
+bool Symbol::isBegin(ASTNode *root, ASTNode *parent) {
+    /* 檢查*/
+    if ( root->value != "begin" || !parent ) return false;
+
+    int arg = countFunctionArg(parent);   // 計算參數個數
+    // cout << "arg: " << arg << endl;  // debug
+
+    if ( arg < 1 ) {
+        // 若參數個數不為1，則拋出錯誤
+        cout << "ERROR (BEGIN format) : ";
+        throw root;
     }
-    else {
-        if ( !second_statement ) {
-            // 第二筆 S-expression 為空，則回傳空值
-            (*root) = NULL;
+
+    try {
+        ASTNode *check_node = parent->right, *temp_root = new ASTNode();  // 該位置應該為需運行的 S-expression
+        copyTree(temp_root, parent); // 將該 S-expression 複製一份，報錯時使用
+            
+        while ( check_node->type != END ) {
+            // 檢查 S-expression 內的每個左子樹
+            if ( check_node->left->type == LEFT_PAREN || check_node->left->type == SYMBOL ) {
+                if ( check_node->left->type == LEFT_PAREN ) symbolCheck(check_node->left->left, check_node->left);
+                else symbolCheck(check_node->left, NULL);
+            }
+
+            if ( check_node->right->type == END ) {
+                // 若為最後一筆 S-expression，則將其設為結果
+                parent->type = check_node->left->type;
+                parent->value = check_node->left->value;
+                parent->left = check_node->left->left;
+                parent->right = check_node->left->right;
+            }
+
+            check_node = check_node->right;  // 接續下一個 S-expression
         }
-        else {
-            // 若條件為 false，則將 S-expression 的左子樹設為第二筆 S-expression
-            (*root) = second_statement;
-        }
+
+
     }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+    return true;
 }
