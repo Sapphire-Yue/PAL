@@ -890,7 +890,7 @@ void Function::optimizeAST() {
         ASTNode *cur = st.top().first;
         ASTNode *parent = st.top().second;
         st.pop();
-        if ( parent == NULL || parent->right == cur ) {
+        if ( parent == NULL ) {
             while ( cur->left != NULL ) {
                 st.push({cur->left, cur});
                 cur = cur->left;
@@ -1133,7 +1133,7 @@ bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
     }
 
     int arg = countFunctionArg(parent);   // 計算參數個數
-    cout << "arg: " << arg << endl;  // debug
+
     if ( arg != 1 ) 
         // 若參數個數不為1，則拋出錯誤
         throw std::runtime_error("ERROR (incorrect number of arguments) : quote\n");
@@ -1148,7 +1148,8 @@ bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
     }
     else if ( new_root->type != LEFT_PAREN ) {
         // 該 S-expression 內的資料為 ATOM ，則需額外定義
-        parent->type = "QUOTE_DATA";
+        if ( new_root->type == SYMBOL ) parent->type = "QUOTE_DATA"; // 若為 SYMBOL ，則需額外定義
+        else parent->type = new_root->type;
         parent->value = new_root->value;
         parent->left = NULL;
         parent->right = NULL;
@@ -1172,8 +1173,6 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
     }
     
     int arg = countFunctionArg(parent);   // 計算參數個數
-    // cout << "arg: " << arg << endl;  // debug
-
     ASTNode *temp = parent->right;
     try {
         ASTNode *new_root = new ASTNode(); // 新建一個 AST 以供檢查
@@ -1184,27 +1183,22 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
             cout << "ERROR (non-list) : ";
             throw root;
         }
-        isList(temp);
+        parent->right = new_root; // 將 parent->right 指向檢查後的 AST
+        temp = parent->right;
+
+        while ( temp->type != END ) {
+            // 檢查 List 內的每個左子樹
+            if ( temp->left->type == SYMBOL )
+                // 若左子樹為 SYMBOL ，則需檢查其內容
+                symbolCheck(temp->left, NULL, 1);
+            temp = temp->right;
+        }
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
     }
     catch ( ASTNode *temp ) {
         throw temp;
-    }
-
-    while ( temp->type != END ) {
-        // 檢查 List 內的每個左子樹
-        if ( temp->left->type == SYMBOL ) {
-            // 若左子樹為 S-expression ，則需檢查其內容
-            try {
-                symbolCheck(temp->left, NULL, 1); // 若為 ATOM 且為 SYMBOL ，則檢查 SYMBOL 是否為定義過的
-            }
-            catch ( const std::runtime_error &msg ) {
-                throw msg;
-            }
-        }
-        temp = temp->right;
     }
 
     // 將 List 內容提高一個階層
@@ -1228,12 +1222,11 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
         return true;
     }
 
-    if ( deep != 0 )
+    if ( deep != 0 ) 
+        // 若不在最上層，則報錯
         throw std::runtime_error("ERROR (level of DEFINE)\n");
-
     int arg = countFunctionArg(parent);   // 計算參數個數
-    // cout << "arg: " << arg << endl;  // debug
-    if ( arg != 2 || parent->right->left->type != SYMBOL ) {
+    if ( arg != 2 ) {
         // 若參數個數不為2，則拋出錯誤
         cout << "ERROR (DEFINE format) : ";
         throw root;
@@ -1248,31 +1241,12 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
             throw root;
         }
 
-        if ( parent->right->left->type == SYMBOL ) key = parent->right->left->value;
-        if ( symbol_set.find(key) != symbol_set.end() ) {
-            // 若該 SYMBOL 為系統定義，則拋出錯誤
+        key = parent->right->left->value; // 取得被定義的 SYMBOL
+        if ( parent->right->left->type != SYMBOL || symbol_set.find(key) != symbol_set.end() ) {
+            // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
             cout << "ERROR (DEFINE format) : ";
             throw root;
         }
-
-        /*
-        ASTNode *temp = parent->right->right;
-         while ( temp->type != END ) {
-            // 檢查 List 內的每個左子樹
-            if ( temp->left->type == LEFT_PAREN ) {
-                // 若左子樹為 S-expression ，則需檢查其內容
-                ASTNode *symbol_node = temp->left->left;
-                if ( symbol_node->value.find("<procedure ") == std::string::npos ) 
-                    symbolCheck(symbol_node, temp->left);
-            }
-            else if ( temp->left->type == SYMBOL ) {
-                // 若為 ATOM 且為 SYMBOL ，則檢查 SYMBOL 是否為定義過的
-                error.checkSymbol(temp->left, false);
-                if ( user_map.find(temp->left->value) != user_map.end() ) temp->left = user_map[temp->left->value]; // 將其內容複寫一份進當前 AST
-                else if ( temp->left->value.find("<procedure ") == std::string::npos ) symbolCheck(temp->left, NULL);
-            }
-            temp = temp->right;
-        } */
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
@@ -1283,7 +1257,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
 
     ASTNode *value = parent->right->right->left;
     if ( symbol_set.find(value->value) != symbol_set.end() || primitive_predicate.find(value->value) != primitive_predicate.end() || basic_arithmetic.find(value->value) != basic_arithmetic.end() )
-        symbolCheck(value, NULL, 1); // 若為 ATOM 且為 SYMBOL ，則檢查 SYMBOL 是否為定義過的
+        symbolCheck(value, NULL, 1); // 若為系統定義 ，則尋找其 Constructor
     else if ( value->type == SYMBOL ) value = user_map[value->value]; // 若被參考值為使用者參數，則將其內容複寫一份進當前 AST
     user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
     cout << key << " defined" << endl;
