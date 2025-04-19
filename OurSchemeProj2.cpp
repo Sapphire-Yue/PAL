@@ -64,13 +64,13 @@ class Symbol {
         Symbol();
         ~Symbol();
         bool &getDefine() { return define; };
-        void symbolCheck(ASTNode *root, ASTNode *parent, int deep);
+        void symbolCheck(ASTNode **root, ASTNode *parent, int deep);
         int countFunctionArg(ASTNode *root);
         bool isCONS(ASTNode *root, ASTNode *parent);
         bool isQUOTE(ASTNode *root, ASTNode *parent);
         bool isList(ASTNode *root, ASTNode *parent);
         bool isUserDefine(ASTNode *root, ASTNode *parent, int deep);
-        void userDefined(ASTNode *root);
+        void userDefined(ASTNode **root);
         void copyTree(ASTNode *root, ASTNode *defined_tree);
         bool isCAR(ASTNode *root, ASTNode *parent);
         bool isCDR(ASTNode *root, ASTNode *parent);
@@ -865,7 +865,10 @@ void Function::optimizeAST() {
     if ( root->type == SYMBOL ) {
         // 若根節點為 SYMBOL ，則檢查是否存在
         try {
-            symbol.symbolCheck(root, NULL, 0); // 為單一 ATOM 時，直接輸出其 SYMBOL 的 value
+            symbol.symbolCheck(&root, NULL, 0); // 為單一 ATOM 時，直接輸出其 SYMBOL 的 value
+            ASTNode *copy_temp = new ASTNode();
+            symbol.copyTree(copy_temp, root); // 將該自定義結構複製
+            root = copy_temp; // 給當前 AST 使用
         }
         catch ( const std::runtime_error &msg ) {
             cout << msg.what();
@@ -898,7 +901,7 @@ void Function::optimizeAST() {
         }
         else {
             try {
-                symbol.symbolCheck(cur, parent, 0);
+                symbol.symbolCheck(&cur, parent, 0);
             }
             catch ( const std::runtime_error &msg ) {
                 cout << msg.what();
@@ -1011,31 +1014,36 @@ void Symbol::checkExpression(ASTNode **root, ASTNode **parent) {
 
     if ( (*parent)->type == LEFT_PAREN || (*parent)->type == SYMBOL ) {
         // 若為 S-expression ，則需檢查其內容
-        if ( (*parent)->type == LEFT_PAREN ) symbolCheck(*root, *parent, 1);
-        else symbolCheck(*parent, NULL, 1);
+        if ( (*parent)->type == LEFT_PAREN ) symbolCheck(root, *parent, 1);
+        else {
+            symbolCheck(parent, NULL, 1);
+            ASTNode *copy_temp = new ASTNode();
+            copyTree(copy_temp, *parent); // 將該自定義結構複製
+            *parent = copy_temp; // 給當前 AST 使用
+        }
     }
 }
 
-void Symbol::symbolCheck(ASTNode *root, ASTNode *parent, int deep) {
+void Symbol::symbolCheck(ASTNode **root, ASTNode *parent, int deep) {
     /* 檢查 Symbol 是否存在 */
     
     try {
-        error.checkSymbol(root, parent ? true : false);
-        procedure(root, parent); // 檢查是否為系統定義的函數
-        if ( isCONS(root, parent) ) cout << "CONS" << endl;
-        else if ( isQUOTE(root, parent) ) cout << "QUOTE" << endl;
-        else if ( isList(root, parent) ) cout << "LIST" << endl;
-        else if ( isUserDefine(root, parent, deep) ) cout << "DEFINE" << endl;
-        else if ( isCAR(root, parent) ) cout << "CAR" << endl;
-        else if ( isCDR(root, parent) ) cout << "CDR" << endl;
-        else if ( checkPrimitivePredicate(root, parent) ) cout << "PRIMITIVE PREDICATE" << endl;
-        else if ( isArithmetic(root, parent) ) cout << "BASIC ARITHMETIC" << endl;
-        else if ( isEqual(root, parent) ) cout << "EQUAL" << endl;
-        else if ( isIf(root, parent) ) cout << "IF" << endl;
-        else if ( isCond(root, parent) ) cout << "COND" << endl;
-        else if ( isBegin(root, parent) ) cout << "BEGIN" << endl;
-        else if ( isCleanEnvironment(root, parent, deep) ) cout << "CLEAN ENVIRONMENT" << endl;
-        else if ( isExit(root, parent) ) return; 
+        error.checkSymbol(*root, parent ? true : false);
+        procedure(*root, parent); // 檢查是否為系統定義的函數
+        if ( isCONS(*root, parent) ) cout << "CONS" << endl;
+        else if ( isQUOTE(*root, parent) ) cout << "QUOTE" << endl;
+        else if ( isList(*root, parent) ) cout << "LIST" << endl;
+        else if ( isUserDefine(*root, parent, deep) ) cout << "DEFINE" << endl;
+        else if ( isCAR(*root, parent) ) cout << "CAR" << endl;
+        else if ( isCDR(*root, parent) ) cout << "CDR" << endl;
+        else if ( checkPrimitivePredicate(*root, parent) ) cout << "PRIMITIVE PREDICATE" << endl;
+        else if ( isArithmetic(*root, parent) ) cout << "BASIC ARITHMETIC" << endl;
+        else if ( isEqual(*root, parent) ) cout << "EQUAL" << endl;
+        else if ( isIf(*root, parent) ) cout << "IF" << endl;
+        else if ( isCond(*root, parent) ) cout << "COND" << endl;
+        else if ( isBegin(*root, parent) ) cout << "BEGIN" << endl;
+        else if ( isCleanEnvironment(*root, parent, deep) ) cout << "CLEAN ENVIRONMENT" << endl;
+        else if ( isExit(*root, parent) ) return; 
         else userDefined(root);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1045,8 +1053,8 @@ void Symbol::symbolCheck(ASTNode *root, ASTNode *parent, int deep) {
         throw msg;
     }
     catch ( ASTNode *temp ) {
-        if ( root != temp ) {
-            copyTree(root, temp);
+        if ( *root != temp ) {
+            copyTree(*root, temp);
             throw root;
         }
         throw parent;
@@ -1076,6 +1084,7 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
         if ( arg == 2 ) {
             ASTNode *fir_node = parent->right->left;
             checkExpression(&fir_node->left, &fir_node); // 檢查第一個參數
+            parent->right->left = fir_node;   // 第一元素將與第二元素同階層
             ASTNode *sec_node = parent->right->right->left;
             checkExpression(&sec_node->left, &sec_node); // 檢查第二個參數
             parent->right->right = sec_node;   // 第二元素將與第一元素同階層
@@ -1188,9 +1197,14 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
 
         while ( temp->type != END ) {
             // 檢查 List 內的每個左子樹
-            if ( temp->left->type == SYMBOL )
+            if ( temp->left->type == SYMBOL ) {
                 // 若左子樹為 SYMBOL ，則需檢查其內容
-                symbolCheck(temp->left, NULL, 1);
+                symbolCheck(&temp->left, NULL, 1);
+                ASTNode *copy_temp = new ASTNode(); // 新建一個 AST 以複製自定義結構
+                copyTree(copy_temp, temp->left); // 將其內容複寫一份進當前 AST
+
+                temp->left = copy_temp; // 將其內容複寫連結進當前 AST
+            }
             temp = temp->right;
         }
     }
@@ -1242,7 +1256,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
         }
 
         key = parent->right->left->value; // 取得被定義的 SYMBOL
-        if ( parent->right->left->type != SYMBOL || symbol_set.find(key) != symbol_set.end() ) {
+        if ( (parent->right->left->type != SYMBOL && parent->right->left->type != "QUOTE_DATA") || symbol_set.find(key) != symbol_set.end() ) {
             // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
             cout << "ERROR (DEFINE format) : ";
             throw root;
@@ -1257,7 +1271,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
 
     ASTNode *value = parent->right->right->left;
     if ( symbol_set.find(value->value) != symbol_set.end() || primitive_predicate.find(value->value) != primitive_predicate.end() || basic_arithmetic.find(value->value) != basic_arithmetic.end() )
-        symbolCheck(value, NULL, 1); // 若為系統定義 ，則尋找其 Constructor
+        symbolCheck(&value, NULL, 1); // 若為系統定義 ，則尋找其 Constructor
     else if ( value->type == SYMBOL ) value = user_map[value->value]; // 若被參考值為使用者參數，則將其內容複寫一份進當前 AST
     user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
     cout << key << " defined" << endl;
@@ -1265,10 +1279,10 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
     return true;
 }
 
-void Symbol::userDefined(ASTNode *root) {
+void Symbol::userDefined(ASTNode **root) {
     /* 將 User Define 傳回並更新 AST */
     try {
-        error.checkSymbol(root, false);
+        error.checkSymbol(*root, false);
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
@@ -1276,11 +1290,12 @@ void Symbol::userDefined(ASTNode *root) {
     catch ( ASTNode *temp ) {
         throw temp;
     }
-    if ( root->value.find("<procedure " ) != std::string::npos ) return; // 若該 SYMBOL 為系統定義過的，則不做任何處理
-    // 若該 SYMBOL 為定義過的，則將其內容複寫一份進當前 AST
-    string key = root->value;
+    if ( (*root)->value.find("<procedure " ) != std::string::npos ) return; // 若該 SYMBOL 為系統定義過的，則不做任何處理
+    // 若該 SYMBOL 為定義過的，則將其指向進當前 AST
+    string key = (*root)->value;
     
-    copyTree(root, user_map[key]);
+    *root = user_map[key]; // 將當前 AST 的內容指向進當前 AST
+    // copyTree(root, user_map[key]);
 }
 
 void Symbol::copyTree(ASTNode *root, ASTNode *defined_tree) {
@@ -1315,8 +1330,8 @@ bool Symbol::isCAR(ASTNode *root, ASTNode *parent) {
         ASTNode *check_node = parent->right->left;  // 該位置應該為 LEFT_PAREN 或自定義 SYMBOL
         if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
             try {
-                if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node, 1);
-                else symbolCheck(check_node, NULL, 1);
+                if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, check_node, 1);
+                else symbolCheck(&check_node, NULL, 1);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -1384,8 +1399,8 @@ bool Symbol::isCDR(ASTNode *root, ASTNode *parent) {
         ASTNode *check_node = parent->right->left;  // 該位置應該為 LEFT_PAREN 或自定義 SYMBOL
         if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
             try {
-                if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node, 1);
-                else symbolCheck(check_node, NULL, 1);
+                if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, check_node, 1);
+                else symbolCheck(&check_node, NULL, 1);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -1452,8 +1467,8 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
             // 若參數個數不為1，則拋出錯誤
             ASTNode *check_node = parent->right->left;  // 該位置應該為需確認的 S-expression
             if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
-                if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node, 1);
-                else symbolCheck(check_node, NULL, 1);
+                if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, check_node, 1);
+                else symbolCheck(&check_node, NULL, 1);
             }
             // 檢查該 S-expression 是否為原始判斷式
             bool checkPrimitive = false;
@@ -1535,7 +1550,7 @@ bool Symbol::isList(ASTNode *root) {
     while ( temp->type != END ) {
         try {
             if ( temp->type != LINK && temp->type != "QUOTE_TEMP" ) return false; // 若該AST並不為List，則返回false
-            else if ( temp->left->type == LEFT_PAREN ) symbolCheck(temp->left->left, temp->left, 1); // 檢查該 AST 內部的 S-expression
+            else if ( temp->left->type == LEFT_PAREN ) symbolCheck(&temp->left->left, temp->left, 1); // 檢查該 AST 內部的 S-expression
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -1618,11 +1633,11 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
                         while ( !s.empty() ) {
                             // 處理多階層的 S-expression
                             temp = s.top();
-                            symbolCheck(temp->left, temp, 1);
+                            symbolCheck(&temp->left, temp, 1);
                             s.pop();
                         }
                     }
-                    else symbolCheck(count_node->left, NULL, 1);
+                    else symbolCheck(&count_node->left, NULL, 1);
                 }
                 // 計算結果
                 calculate(count_node, root->value, result, first);
@@ -1804,8 +1819,8 @@ bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
             ASTNode *check_node = parent->right;
             while ( check_node->type != END ) {
                 if ( check_node->left->type == LEFT_PAREN || check_node->left->type == SYMBOL ) {
-                    if ( check_node->left->type == LEFT_PAREN ) symbolCheck(check_node->left->left, check_node->left, 1);
-                    else symbolCheck(check_node->left, NULL, 1);
+                    if ( check_node->left->type == LEFT_PAREN ) symbolCheck(&check_node->left->left, check_node->left, 1);
+                    else symbolCheck(&check_node->left, NULL, 1);
                 }
                 check_node = check_node->right;  // 接續下一個 S-expression
             }
@@ -1953,7 +1968,7 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
             }
             if ( check_node->right->type != END && check_node->left->left->value != "else" ) {
                 // 有先處理判斷式，只留下 True 的 S-expression
-                if ( check_node->left->left->type == LEFT_PAREN ) symbolCheck(check_node->left->left->left, check_node->left->left, 1);
+                if ( check_node->left->left->type == LEFT_PAREN ) symbolCheck(&check_node->left->left->left, check_node->left->left, 1);
             }
             check_node = check_node->right; // 接續下一個 S-expression
         }
@@ -1989,8 +2004,8 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
         while ( temp->right && temp->type != END  ) {
             // 檢查 S-expression 內的每個左子樹
             if ( temp->left->type == LEFT_PAREN || temp->left->type == SYMBOL ) {
-                if ( temp->left->type == LEFT_PAREN ) symbolCheck(temp->left->left, temp->left, 1);
-                else symbolCheck(temp->left, NULL, 1);
+                if ( temp->left->type == LEFT_PAREN ) symbolCheck(&temp->left->left, temp->left, 1);
+                else symbolCheck(&temp->left, NULL, 1);
             }
             
             if ( temp->right->type == END ) {
@@ -1999,7 +2014,7 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
             }
             temp = temp->right; // 接續下一個 S-expression
         }
-        if ( temp->type == SYMBOL ) userDefined(temp); // 若為自定義 Symbol，則將其轉為對應的 AST
+        if ( temp->type == SYMBOL ) userDefined(&temp); // 若為自定義 Symbol，則將其轉為對應的 AST
 
         parent->type = result_statement->type;
         parent->value = result_statement->value;
@@ -2022,8 +2037,8 @@ void Symbol::conditional(ASTNode **root, string &operand) {
     try {
         if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
             // 檢查 S-expression 內的每個左子樹
-            if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node, 1);
-            else symbolCheck(check_node, NULL, 1);
+            if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, check_node, 1);
+            else symbolCheck(&check_node, NULL, 1);
         }
 
         bool conditional = true;
@@ -2043,8 +2058,8 @@ void Symbol::conditional(ASTNode **root, string &operand) {
             check_node = first_statement->left;
             if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
                 // 檢查 S-expression 內的每個左子樹
-                if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node, 1);
-                else symbolCheck(check_node, NULL, 1);
+                if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, check_node, 1);
+                else symbolCheck(&check_node, NULL, 1);
             }
             (*root) = check_node;
         }
@@ -2058,8 +2073,8 @@ void Symbol::conditional(ASTNode **root, string &operand) {
                 check_node = second_statement;
                 if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
                     // 檢查 S-expression 內的每個左子樹
-                    if ( check_node->type == LEFT_PAREN ) symbolCheck(check_node->left, check_node, 1);
-                    else symbolCheck(check_node, NULL, 1);
+                    if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, check_node, 1);
+                    else symbolCheck(&check_node, NULL, 1);
                 }
                 (*root) = check_node;
             }
@@ -2106,7 +2121,7 @@ bool Symbol::isBegin(ASTNode *root, ASTNode *parent) {
         while ( check_node->type != END ) {
             // 檢查 S-expression 內的每個左子樹
             if ( check_node->left->type == SYMBOL ) {
-                symbolCheck(check_node->left, NULL, 1);
+                symbolCheck(&check_node->left, NULL, 1);
             }
 
             if ( check_node->right->type == END ) {
