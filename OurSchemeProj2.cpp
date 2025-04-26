@@ -42,6 +42,7 @@ class Atom {
         bool isSTRING(string &atom);
         bool isDOT(string &atom);
         bool isFLOAT(string &atom);
+        bool isFLOAT(string &atom, bool rounding);
         bool isNIL(string &atom);
         bool isT(string &atom);
         bool isQUOTE(string &atom);
@@ -84,7 +85,7 @@ class Symbol {
         bool isString(ASTNode *root);
         bool isBoolean(ASTNode *root);
         bool isSymbol(ASTNode *root);
-        bool isArithmetic(ASTNode *root, ASTNode *parent);
+        bool isArithmetic(ASTNode *root, ASTNode **parent);
         bool isEqual(ASTNode *root, ASTNode *parent);
         bool isIf(ASTNode *root, ASTNode *parent);
         bool isCond(ASTNode *root, ASTNode *parent);
@@ -97,7 +98,7 @@ class Symbol {
         bool define;
         void checkExpression(ASTNode **root, ASTNode **parent);
         void copyAndLink(ASTNode **root);
-        void calculate(ASTNode *root, string &operand, string &result, bool &first);
+        void calculate(ASTNode *root, ASTNode **result, string &operand, bool &first);
         bool campare(ASTNode *first_element, ASTNode *second_element);
         void conditional(ASTNode **root, string &operand);
         void procedure(ASTNode *root, ASTNode *parent);
@@ -582,11 +583,16 @@ bool Function::printAST() {
         ASTNode *cur = st.top().first;
         string direction = st.top().second; // 紀錄該節點為左節點或右節點
         st.pop();
+        // 遍歷子樹
+        if ( cur->right ) st.push({cur->right, "right"});
+        if ( cur->left ) st.push({cur->left, "left"});
+
+        if ( cur->value == "(" && direction == "right" ) continue; // 若該節點為右節點，則不需印出左括弧
         if ( cur->type != LINK && cur->type != TEMP ) {
             // 除了連結節點外，其他節點皆需印出
             if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
             if ( !beforeIsParen ) {
-                if ( direction == "right" && cur->type != END && cur->value != "(" ) {
+                if ( direction == "right" && cur->type != END ) {
                     // 若該節點為右節點，且內容不為左括弧以及結束節點，則印出點
                     for ( int i = 0; i < left_paren; ++i ) cout << "  ";
                     cout << "." << endl;
@@ -601,11 +607,13 @@ bool Function::printAST() {
                 beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
             }
             else if ( cur->type == END ) cout << ")" << endl;
-            else cout << cur->value << endl;
+            else {
+                cout << cur->value << endl;
+                if ( !cur->right &&  direction == "right" ) cout << ")" << endl; // 若該節點為右節點結尾，則印出右括弧
+            }
         }
-        // 遍歷子樹
-        if ( cur->right ) st.push({cur->right, "right"});
-        if ( cur->left ) st.push({cur->left, "left"});
+        
+        
     }
     cout << "\n> ";
     newAST();
@@ -690,6 +698,43 @@ bool Atom::isSTRING(string &atom) {
 }
 
 bool Atom::isFLOAT(string &atom) {
+    /*檢查Atom是否為浮點數*/
+    int len = atom.size(), decimal = 0;
+    string num;
+    bool dot = false, interger = false, round = false;
+
+    for ( int i = 0; i < len; ++i ) {
+        // 數字開頭可以有正負號
+        if ( i == 0 && (atom[i] == '+' || atom[i] == '-') ) {
+            if ( atom[i] == '-' ) num += '-';
+            continue;
+        }
+        else if ( !isdigit(atom[i]) ) {
+            if ( atom[i] == '.' && !dot ) {
+                dot = true;
+                if ( !interger ) num += '0'; // 若並未輸入整數位，則補0
+                num += '.';
+            }
+            else return false; // 若含非數字或點字元，則不為浮點數
+        }
+        else {
+            if ( decimal >= 3 ) {
+                // 小數點後最多3位
+                if ( decimal == 3 && atom[i] >= '5' ) round = true; // 四捨五入
+                ++decimal;
+                continue;
+            } 
+            num += atom[i];
+            interger = true;
+            if ( dot ) ++decimal; // 計算小數位數
+        }
+    }
+
+    if ( !interger ) return false; // 若不含數字，則不為浮點數
+    return true;
+}
+
+bool Atom::isFLOAT(string &atom, bool rounding) {
     /*檢查Atom是否為浮點數，並取浮點數後三位*/
     int len = atom.size(), decimal = 0;
     string num;
@@ -1066,7 +1111,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         else if ( isCAR(root, non_function ? NULL : parent) ) cout << "CAR" << endl;
         else if ( isCDR(root, non_function ? NULL : parent) ) cout << "CDR" << endl;
         else if ( checkPrimitivePredicate(*root, non_function ? NULL : *parent) ) cout << "PRIMITIVE PREDICATE" << endl;
-        else if ( isArithmetic(*root, non_function ? NULL : *parent) ) cout << "BASIC ARITHMETIC" << endl;
+        else if ( isArithmetic(*root, non_function ? NULL : parent) ) cout << "BASIC ARITHMETIC" << endl;
         else if ( isEqual(*root, non_function ? NULL : *parent) ) cout << "EQUAL" << endl;
         else if ( isIf(*root, non_function ? NULL : *parent) ) cout << "IF" << endl;
         else if ( isCond(*root, non_function ? NULL : *parent) ) cout << "COND" << endl;
@@ -1115,35 +1160,17 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
             ASTNode **fir_node = &parent->right->left;
             if ( (*fir_node)->type == LEFT_PAREN ) (*fir_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             checkExpression(&(*fir_node)->left, fir_node); // 檢查第一個參數
-            copyAndLink(fir_node);
+            // copyAndLink(fir_node);
             ASTNode **sec_node = &parent->right->right->left;
             if ( (*sec_node)->type == LEFT_PAREN ) (*sec_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             checkExpression(&(*sec_node)->left, sec_node); // 檢查第二個參數
-            copyAndLink(sec_node);
+            // copyAndLink(sec_node);
             parent->right->right = parent->right->right->left;   // 第二元素將與第一元素同階層
     
             // 將 dotted pair 提高一個階層放置
             parent->type = "QUOTE_TEMP";
             parent->left = parent->right->left;
             parent->right = parent->right->right; 
-    
-            if ( parent->right->right == NULL ) {
-                // 若右子樹為 ATOM ，則需額外添加結束節點
-                if ( parent->right->value == "nil" || parent->right->type == END ) {
-                    // 若右子樹為 nil ，則需將其轉為 END
-                    parent->right->type = END;
-                    parent->right->value = "";
-                }
-                else {
-                    parent->right->right = new ASTNode();
-                    parent->right->right->type = END;
-                }
-            }
-            else if ( parent->right->type == "QUOTE_TEMP" ) {
-                // 若右子樹為 QUOTE ，則需將其降階
-                parent->right->type = LINK;
-                parent->right->value = ""; 
-            }
     
             // // 檢查 CONS 內的 SYMBOL 是否為定義過的
             // if ( parent->left->type == SYMBOL ) error.checkSymbol(parent->left, false);
@@ -1599,25 +1626,25 @@ bool Symbol::isSymbol(ASTNode *root) {
     return false;
 }
 
-bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
+bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
     /* 檢查該 Symbol 是否為基礎運算式或比較運算式 */
     
     if ( basic_arithmetic.find(root->value) == basic_arithmetic.end() || 
     (root->value.size() > 14 && basic_arithmetic.find(root->value.substr(13, root->value.size() - 1)) == basic_arithmetic.end()) ) return false;
-    else if ( !parent || parent->type != LEFT_PAREN ) {
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 Arithmetic function 功能，只留回傳功能
         root->value = "#<procedure " + root->value + ">";
         return true;
     }
 
-    int arg = countFunctionArg(parent);   // 計算參數個數
+    int arg = countFunctionArg(*parent);   // 計算參數個數
     // cout << "arg: " << arg << endl;  // debug
 
     try {
         if ( (arg == 1 && root->value == "not") || (arg >= 2 && root->value != "not") ) {
             // 若參數個數小於2，則拋出錯誤
-            ASTNode *count_node = parent->right;  // 該位置應該為需計算的 S-expression
-            string result, compare_result = "";
+            ASTNode *count_node = (*parent)->right, *result = new ASTNode();  // 該位置應該為需計算的 S-expression
+            string compare_result = "";
             bool first = false, compare = false;
             while ( count_node->type != END ) {
                 if ( count_node->left->type == LEFT_PAREN || count_node->left->type == SYMBOL ) {
@@ -1639,53 +1666,57 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
                     else symbolCheck(&count_node->left, NULL, 1);
                 }
                 // 計算結果
-                calculate(count_node, root->value, result, first);
-                if ( (result == "nil" || result == "#t") && root->value != "or" ) {
+                calculate(count_node, &result, root->value, first);
+                if ( (result->value == "nil" || result->value == "#t") && root->value != "or" && root->value != "and" ) {
                     // 若結果為 nil 或 #t，則該 function 為比較運算式
                     compare = true;
-                    if ( result == "nil" )
+                    if ( result->value == "nil" )
                         // 若結果為 nil，則將比較結果設為 false
                         compare_result = "nil";
                     else if ( compare_result != "nil" )
                         // 若結果不為 nil，則將比較結果設為 true
                         compare_result = "#t";
-                    result = count_node->left->value; // 將當前數字儲存
+                    result = count_node->left; // 將當前數字儲存
                 }
 
                 count_node = count_node->right;  // 接續下一個數字
             }
-            if ( root->value == "and" ) {
-                // 若為 and 運算式，且過程中結果並未有 nil，則結果為最後一個元素
-                if ( compare_result == "nil") result = compare_result;
-            }
-            else if ( compare ) result = compare_result; // 若為比較運算式，則將結果設為比較結果
+            // if ( root->value == "and" ) {
+            //     // 若為 and 運算式，且過程中結果並未有 nil，則結果為最後一個元素
+            //     if ( compare_result == "nil") result = compare_result;
+            // }
+            if ( compare ) result->value = compare_result; // 若為比較運算式，則將結果設為比較結果
             
             // 將結果寫回根節點
-            if ( atom.isINT(result) ) {
+            if ( atom.isINT(result->value) ) {
                 // 若結果為整數，則將其轉為整數
-                parent->type = INT;
-                parent->value = result;
+                (*parent)->type = INT;
+                (*parent)->value = result->value;
             }
-            else if ( atom.isFLOAT(result) ) {
+            else if ( atom.isFLOAT(result->value, true) ) {
                 // 若結果為浮點數，則將其轉為浮點數
-                parent->type = FLOAT;
-                parent->value = result;
+                (*parent)->type = FLOAT;
+                (*parent)->value = result->value;
             }
-            else if ( atom.isSTRING(result) ) {
+            else if ( atom.isSTRING(result->value) ) {
                 // 若結果為字串，則將其轉為字串
-                parent->type = STRING;
-                parent->value = result;
+                (*parent)->type = STRING;
+                (*parent)->value = result->value;
             }
-            else if ( atom.isT(result) || atom.isNIL(result) ) {
-                parent->type = BOOL;
-                parent->value = result;
+            else if ( atom.isT(result->value) || atom.isNIL(result->value) ) {
+                (*parent)->type = BOOL;
+                (*parent)->value = result->value;
+            }
+            else {
+                *parent = result; // 若結果為其他型別，則將其轉為其他型別
+                return true;
             }
             // 只將結果留下來，並刪除原本的 S-expression
-            ASTNode *temp = parent->right;
-            parent->right = NULL;
+            ASTNode *temp = (*parent)->right;
+            (*parent)->right = NULL;
             delete temp; // 刪除原本的右子樹
-            temp = parent->left;
-            parent->left = NULL;
+            temp = (*parent)->left;
+            (*parent)->left = NULL;
             delete temp; // 刪除原本的左子樹
         }
         else {
@@ -1703,7 +1734,7 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
         throw msg;
     }
     catch ( ASTNode *temp ) {
-        ASTNode *temp2 = parent->right;
+        ASTNode *temp2 = (*parent)->right;
         while ( temp2->type != END ) {
             // 將原本的 S-expression 內容刪除
             if ( temp2->left == temp ) {
@@ -1718,7 +1749,7 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode *parent) {
     return true;
 }
 
-void Symbol::calculate(ASTNode *root, string &operand, string &result, bool &first) {
+void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &first) {
     /* 計算結果 */
     if ( !atom.isINT(root->left->value) && !atom.isFLOAT(root->left->value) && 
         (operand == "+" || operand == "-" || operand == "*" || operand == "/" || operand == ">" || operand == "<" || operand == ">=" || operand == "<=" || operand == "=" ) )
@@ -1730,73 +1761,77 @@ void Symbol::calculate(ASTNode *root, string &operand, string &result, bool &fir
 
     if ( !first ) {
         // 並未寫入第一筆資料
-        result = root->left->value; // 將當前數字儲存
-        if ( operand == "not" ) result = ( result == "nil" ) ? "#t" : "nil"; // 若為 not，則將結果轉為布林值
+        *result = root->left; // 將當前數字儲存
+        if ( operand == "not" ) {
+            ASTNode *temp = new ASTNode();
+            temp->type = BOOL;
+            // 若為 not，則將結果轉為布林值
+            temp->value = ( (*result)->value == "nil" ) ? "#t" : "nil";
+            *result = temp; // 將結果設為布林值 
+        }
         first = true; // 設定為已寫入第一筆資料
         return;
     }
 
-    string operate = root->left->value;
+    ASTNode *operate = root->left;
 
     if ( operand == "+" ) {
-        if ( atom.isINT(operate) && atom.isINT(result) ) 
+        if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
             // 若兩者皆為整數，則將其轉為整數
-            result = to_string(stoi(result) + stoi(operate));
+            (*result)->value = to_string(stoi((*result)->value) + stoi(operate->value));
         else 
             // 若兩者皆為浮點數，則將其轉為浮點數
-            result = to_string(stof(result) + stof(operate));
+            (*result)->value = to_string(stod((*result)->value) + stod(operate->value));
     }
         
     else if ( operand == "-" ) {
-        if ( atom.isINT(operate) && atom.isINT(result) ) 
-            result = to_string(stoi(result) - stoi(operate));
+        if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
+            (*result)->value = to_string(stoi((*result)->value) - stoi(operate->value));
         else 
-            result = to_string(stof(result) - stof(operate));
+            (*result)->value = to_string(stod((*result)->value) - stod(operate->value));
     }
     else if ( operand == "*" ) {
-        if ( atom.isINT(operate) && atom.isINT(result) ) 
-            result = to_string(stoi(result) * stoi(operate));
+        if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
+            (*result)->value = to_string(stoi((*result)->value) * stoi(operate->value));
         else 
-            result = to_string(stof(result) * stof(operate));
+            (*result)->value = to_string(stod((*result)->value) * stod(operate->value));
     }
     else if ( operand == "/" ) {
-        if ( stoi(operate) == 0 ) {
+        if ( stod(operate->value) == 0 ) {
             // 若除數為0，則拋出錯誤
             throw std::runtime_error("ERROR (division by zero) : /\n");
         }
-        if ( atom.isINT(operate) && atom.isINT(result) ) 
-            result = to_string(stoi(result) / stoi(operate));
+        if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
+            (*result)->value = to_string(stoi((*result)->value) / stoi(operate->value));
         else
-            result = to_string(stof(result) / stof(operate));
+            (*result)->value = to_string(stod((*result)->value) / stod(operate->value));
     }
-    else if ( operand == "and" && result != "nil" ) {
-        if ( root->left->type != BOOL && root->left->type != NIL ) result = operate;
-        else result = ( operate == "#t" ) ? "#t" : "nil";
+    else if ( operand == "and" && (*result)->value != "nil" ) {
+        if ( operate->value == "nil" ) *result = operate;
+        else *result = operate;
     }
-    else if ( operand == "or" && result == "nil" ) {
-        if ( root->left->type != BOOL && root->left->type != NIL ) result = operate;
-        else result = ( operate == "#t" ) ? "#t" : "nil";
-    }
+    else if ( operand == "or" && (*result)->value == "nil" )
+        *result = operate;
     else if ( operand == ">" ) 
-        result = ( stof(result) > stof(operate) ) ? "#t" : "nil";
+        (*result)->value = ( stod((*result)->value) > stod(operate->value) ) ? "#t" : "nil";
     else if ( operand == "<" ) 
-        result = ( stof(result) < stof(operate) ) ? "#t" : "nil";
+        (*result)->value = ( stod((*result)->value) < stod(operate->value) ) ? "#t" : "nil";
     else if ( operand == ">=" ) 
-        result = ( stof(result) >= stof(operate) ) ? "#t" : "nil";
+        (*result)->value = ( stod((*result)->value) >= stod(operate->value) ) ? "#t" : "nil";
     else if ( operand == "<=" ) 
-        result = ( stof(result) <= stof(operate) ) ? "#t" : "nil";
+        (*result)->value = ( stod((*result)->value) <= stod(operate->value) ) ? "#t" : "nil";
     else if ( operand == "=" ) 
-        result = ( stof(result) == stof(operate) ) ? "#t" : "nil";
+        (*result)->value = ( stod((*result)->value) == stod(operate->value) ) ? "#t" : "nil";
     else if ( operand == "string-append" )
         // 若為字串相加，則將其轉為字串
-        result = result.substr(0, result.size() - 1) + operate.substr(1, operate.size() - 1); // 去除字串的引號
+        (*result)->value = (*result)->value.substr(0, (*result)->value.size() - 1) + operate->value.substr(1, operate->value.size() - 1); // 去除字串的引號
     else if ( operand == "string>?" ) 
         // 若為字串比較，則將其轉為布林值
-        result = ( result > operate ) ? "#t" : "nil";
+        (*result)->value = ( (*result)->value > operate->value ) ? "#t" : "nil";
     else if ( operand == "string<?" ) 
-        result = ( result < operate ) ? "#t" : "nil";
+        (*result)->value = ( (*result)->value < operate->value ) ? "#t" : "nil";
     else if ( operand == "string=?" ) 
-        result = ( result == operate ) ? "#t" : "nil";
+        (*result)->value = ( (*result)->value == operate->value ) ? "#t" : "nil";
 }
 
 bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
