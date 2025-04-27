@@ -588,28 +588,41 @@ bool Function::printAST() {
         if ( cur->left ) st.push({cur->left, "left"});
 
         if ( cur->value == "(" && direction == "right" ) continue; // 若該節點為右節點，則不需印出左括弧
-        if ( cur->type != LINK && cur->type != TEMP ) {
+        if ( cur->type != TEMP ) {
             // 除了連結節點外，其他節點皆需印出
             if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
+            else if ( cur->type == LINK && direction == "right" ) continue; // 作為右子樹的連結節點，不須印出左括弧
             if ( !beforeIsParen ) {
-                if ( direction == "right" && cur->type != END ) {
+                if ( direction == "right" && cur->type != END && cur->value != "nil" ) {
                     // 若該節點為右節點，且內容不為左括弧以及結束節點，則印出點
                     for ( int i = 0; i < left_paren; ++i ) cout << "  ";
                     cout << "." << endl;
                 }
-                for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                
+                if ( direction != "right" || cur->value != "nil" )
+                    for ( int i = 0; i < left_paren; ++i ) cout << "  ";
             }
             else beforeIsParen = false;
 
-            if ( cur->value == "(" ) {
+            if ( cur->value == "(" || cur->type == LINK ) {
                 ++left_paren;
-                cout << cur->value << " ";
+                cout << "( ";
                 beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
             }
-            else if ( cur->type == END ) cout << ")" << endl;
+            else if ( cur->type == END ) {
+                if ( left_paren < 0 ) cout << "nil" << endl;
+                else cout << ")" << endl;
+            }
             else {
-                cout << cur->value << endl;
-                if ( !cur->right &&  direction == "right" ) cout << ")" << endl; // 若該節點為右節點結尾，則印出右括弧
+                if ( direction != "right" || cur->value != "nil" ) {
+                    if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
+                    cout << cur->value << endl;
+                }
+                if ( !cur->right && direction == "right" ) {
+                    --left_paren;
+                    for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                    cout << ")" << endl; // 若該節點為右節點結尾，則印出右括弧
+                }
             }
         }
         
@@ -730,7 +743,7 @@ bool Atom::isFLOAT(string &atom) {
         }
     }
 
-    if ( !interger ) return false; // 若不含數字，則不為浮點數
+    if ( !interger || !dot  ) return false; // 若不含數字，則不為浮點數
     return true;
 }
 
@@ -767,7 +780,7 @@ bool Atom::isFLOAT(string &atom, bool rounding) {
         }
     }
 
-    if ( !interger ) return false; // 若不含數字，則不為浮點數
+    if ( !interger || !dot  ) return false; // 若不含數字，則不為浮點數
 
     while ( decimal < 3 ) {
         // 若小數位數不足3位，則補0
@@ -853,6 +866,10 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
+        }
+        catch ( const char *msg ) {
+            // clean-environment 不做其他回傳
+            function.newAST();
         }
         //function.printAST();
         line = 0, column = 0; // 重新另一個S-expression
@@ -940,7 +957,6 @@ void Function::optimizeAST() {
         printAST(); 
         return;
     }
-
 
     while ( !st.empty() ) {
         ASTNode **cur = st.top().first;
@@ -1079,7 +1095,10 @@ void Symbol::checkExpression(ASTNode **root, ASTNode **parent) {
 
     if ( (*parent)->type == LEFT_PAREN || (*parent)->type == SYMBOL ) {
         // 若為 S-expression ，則需檢查其內容
-        if ( (*parent)->type == LEFT_PAREN ) symbolCheck(root, parent, 1);
+        if ( (*parent)->type == LEFT_PAREN ) {
+            if ( root && (*root)->type == LEFT_PAREN ) checkExpression(&(*root)->left, root); // 若為左括弧，則檢查其內容
+            symbolCheck(root, parent, 1);
+        }
         else {
             symbolCheck(parent, NULL, 1);
             // ASTNode *copy_temp = new ASTNode();
@@ -1165,6 +1184,7 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
             if ( (*sec_node)->type == LEFT_PAREN ) (*sec_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             checkExpression(&(*sec_node)->left, sec_node); // 檢查第二個參數
             // copyAndLink(sec_node);
+            // if ( (*sec_node)->value == "nil" ) (*sec_node)->type = END; // 若右子樹為 nil ，則該節點為 END
             parent->right->right = parent->right->right->left;   // 第二元素將與第一元素同階層
     
             // 將 dotted pair 提高一個階層放置
@@ -1397,7 +1417,7 @@ bool Symbol::isCAR(ASTNode **root, ASTNode **parent) {
                 throw std::runtime_error("ERROR (car with incorrect argument type) : " + check_node->value + "\n");
             }
     
-            if ( (*parent)->type != LINK && (*parent)->type != LEFT_PAREN && (*parent)->type != "QUOTE_TEMP" ) {
+            if ( (*parent)->type != LINK && (*parent)->type != LEFT_PAREN && (*parent)->type != "QUOTE_TEMP" && (*parent)->type != END ) {
                 // 若為 ATOM ，則需額外定義
                 copyAndLink(parent); // 將該自定義結構複製，以避免覆蓋
                 if ( (*parent)->type == SYMBOL )
@@ -1450,16 +1470,16 @@ bool Symbol::isCDR(ASTNode **root, ASTNode **parent) {
                 throw std::runtime_error("ERROR (cdr with incorrect argument type) : " + check_node->value + "\n");
             }
 
-            if ( (*parent)->type != LINK && (*parent)->type != LEFT_PAREN && (*parent)->type != "QUOTE_TEMP" ) {
+            if ( (*parent)->type != LINK && (*parent)->type != LEFT_PAREN && (*parent)->type != "QUOTE_TEMP" && (*parent)->type != END ) {
                 // 若為 ATOM ，則需額外定義
                 copyAndLink(parent); // 將該自定義結構複製
                 if ( (*parent)->type == SYMBOL )
                     (*parent)->type = "QUOTE_DATA"; // 若為單一 SYMBOL ，則需額外定義
-                else if ( (*parent)->type == END ) {
-                    // 若為 END ，則需將其轉為 nil
-                    (*parent)->type = BOOL;
-                    (*parent)->value = "nil";
-                }
+                // else if ( (*parent)->type == END ) {
+                //     // 若為 END ，則需將其轉為 nil
+                //     (*parent)->type = BOOL;
+                //     (*parent)->value = "nil";
+                // }
                 (*parent)->right = NULL;
                 (*parent)->left = NULL;
             }
@@ -1556,7 +1576,7 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
 
 bool Symbol::isAtom(ASTNode *root) {
     /* 檢查該AST是否為 Atom */
-    if ( root->type == SYMBOL || root->type == INT || root->type == FLOAT || root->type == STRING || root->type == NIL || root->type == BOOL ) return true;
+    if ( root->type == SYMBOL || root->type == INT || root->type == FLOAT || root->type == STRING || root->type == NIL || root->type == BOOL || root->type == END ) return true;
     return false;
 }
 
@@ -1647,24 +1667,26 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
             string compare_result = "";
             bool first = false, compare = false;
             while ( count_node->type != END ) {
-                if ( count_node->left->type == LEFT_PAREN || count_node->left->type == SYMBOL ) {
-                    if ( count_node->left->type == LEFT_PAREN ) {
-                        stack<ASTNode *> s;
-                        ASTNode *temp = count_node->left;
-                        s.push(temp);
-                        while ( temp->left->type == LEFT_PAREN ) {
-                            s.push(temp->left);
-                            temp = temp->left;
-                        }
-                        while ( !s.empty() ) {
-                            // 處理多階層的 S-expression
-                            temp = s.top();
-                            symbolCheck(&temp->left, &temp, 1);
-                            s.pop();
-                        }
-                    }
-                    else symbolCheck(&count_node->left, NULL, 1);
-                }
+                checkExpression(&count_node->left->left, &count_node->left); // 檢查 Expression 內的內容
+                // if ( count_node->left->type == LEFT_PAREN || count_node->left->type == SYMBOL ) {
+                    
+                //     if ( count_node->left->type == LEFT_PAREN ) {
+                //         stack<ASTNode *> s;
+                //         ASTNode *temp = count_node->left;
+                //         s.push(temp);
+                //         while ( temp->left->type == LEFT_PAREN ) {
+                //             s.push(temp->left);
+                //             temp = temp->left;
+                //         }
+                //         while ( !s.empty() ) {
+                //             // 處理多階層的 S-expression
+                //             temp = s.top();
+                //             symbolCheck(&temp->left, &temp, 1);
+                //             s.pop();
+                //         }
+                //     }
+                //     else symbolCheck(&count_node->left, NULL, 1);
+                // }
                 // 計算結果
                 calculate(count_node, &result, root->value, first);
                 if ( (result->value == "nil" || result->value == "#t") && root->value != "or" && root->value != "and" ) {
@@ -1685,7 +1707,10 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
             //     // 若為 and 運算式，且過程中結果並未有 nil，則結果為最後一個元素
             //     if ( compare_result == "nil") result = compare_result;
             // }
-            if ( compare ) result->value = compare_result; // 若為比較運算式，則將結果設為比較結果
+            if ( compare ) {
+                copyAndLink(&result); // 將該自定義結構複製
+                result->value = compare_result; // 若為比較運算式，則將結果設為比較結果
+            }
             
             // 將結果寫回根節點
             if ( atom.isINT(result->value) ) {
@@ -1776,6 +1801,7 @@ void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &f
     ASTNode *operate = root->left;
 
     if ( operand == "+" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
             // 若兩者皆為整數，則將其轉為整數
             (*result)->value = to_string(stoi((*result)->value) + stoi(operate->value));
@@ -1785,18 +1811,21 @@ void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &f
     }
         
     else if ( operand == "-" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
             (*result)->value = to_string(stoi((*result)->value) - stoi(operate->value));
         else 
             (*result)->value = to_string(stod((*result)->value) - stod(operate->value));
     }
     else if ( operand == "*" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
             (*result)->value = to_string(stoi((*result)->value) * stoi(operate->value));
         else 
             (*result)->value = to_string(stod((*result)->value) * stod(operate->value));
     }
     else if ( operand == "/" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         if ( stod(operate->value) == 0 ) {
             // 若除數為0，則拋出錯誤
             throw std::runtime_error("ERROR (division by zero) : /\n");
@@ -1812,26 +1841,44 @@ void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &f
     }
     else if ( operand == "or" && (*result)->value == "nil" )
         *result = operate;
-    else if ( operand == ">" ) 
+    else if ( operand == ">" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( stod((*result)->value) > stod(operate->value) ) ? "#t" : "nil";
-    else if ( operand == "<" ) 
+    }
+    else if ( operand == "<" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( stod((*result)->value) < stod(operate->value) ) ? "#t" : "nil";
-    else if ( operand == ">=" ) 
+    }
+    else if ( operand == ">=" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( stod((*result)->value) >= stod(operate->value) ) ? "#t" : "nil";
-    else if ( operand == "<=" ) 
+    }
+    else if ( operand == "<=" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( stod((*result)->value) <= stod(operate->value) ) ? "#t" : "nil";
-    else if ( operand == "=" ) 
+    }
+    else if ( operand == "=" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( stod((*result)->value) == stod(operate->value) ) ? "#t" : "nil";
-    else if ( operand == "string-append" )
+    }
+    else if ( operand == "string-append" ) {
         // 若為字串相加，則將其轉為字串
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = (*result)->value.substr(0, (*result)->value.size() - 1) + operate->value.substr(1, operate->value.size() - 1); // 去除字串的引號
-    else if ( operand == "string>?" ) 
+    }
+    else if ( operand == "string>?" ) {
         // 若為字串比較，則將其轉為布林值
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( (*result)->value > operate->value ) ? "#t" : "nil";
-    else if ( operand == "string<?" ) 
+    }
+    else if ( operand == "string<?" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( (*result)->value < operate->value ) ? "#t" : "nil";
-    else if ( operand == "string=?" ) 
+    }
+    else if ( operand == "string=?" ) {
+        copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( (*result)->value == operate->value ) ? "#t" : "nil";
+    }
 }
 
 bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
@@ -1981,7 +2028,7 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
     if ( arg < 1 ) {
         // 若參數個數不為1，則拋出錯誤
         cout << "ERROR (COND format) : ";
-        throw root;
+        throw parent;
     }
 
     try {
@@ -1997,6 +2044,11 @@ bool Symbol::isCond(ASTNode *root, ASTNode *parent) {
             }
             else {
                 ASTNode *temp = check_node->left;
+                if ( temp->right->type == END ) {
+                    // 若該 S-expression 內的右子樹為 END，則拋出錯誤
+                    cout << "ERROR (COND format) : ";
+                    throw temp_root;
+                }
                 while ( temp->type != END ) {
                     // 檢查 S-expression 內的每個左子樹
                     if ( temp->type != LEFT_PAREN && temp->type != LINK ) {
@@ -2078,7 +2130,7 @@ void Symbol::conditional(ASTNode **root, string &operand) {
     try {
         checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
         bool conditional = true;
-        if ( check_node->value == "nil" )
+        if ( check_node->value == "nil" || check_node->type == END )
             // 若條件為 nil，則將 conditional 設為 false
             conditional = false;
 
