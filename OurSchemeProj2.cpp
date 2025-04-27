@@ -91,7 +91,7 @@ class Symbol {
         bool isCond(ASTNode *root, ASTNode *parent);
         bool isBegin(ASTNode *root, ASTNode *parent);
         bool isCleanEnvironment(ASTNode *root, ASTNode *parent, int deep);
-        bool isExit(ASTNode *root, ASTNode *parent);
+        bool isExit(ASTNode *root, ASTNode *parent, int deep);
     private:
         Atom atom;
         Error error;
@@ -121,7 +121,6 @@ class Function {
         void quoteExpression(string &token, int &line, int &column);
         bool checkExit();
         void optimizeAST();
-        void leafToRoot(ASTNode *root, int level);
         bool printAST();
     private:
         ASTNode *root;
@@ -427,6 +426,9 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         catch ( const std::runtime_error &msg ) {
             throw msg;
         }
+        catch ( const char *msg ) {
+            if ( msg == "Exit" ) return;
+        }
         line = 0, column = 0;
         return;
     }
@@ -448,7 +450,15 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         backExpression();
         if ( ast.empty() ) {
             // 若無外層 S-expression ，表示指令建構完成，則輸出 AST
-            optimizeAST();
+            try {
+                optimizeAST(); // 指令建構完成，則輸出 AST
+            }
+            catch ( const std::runtime_error &msg ) {
+                throw msg;
+            }
+            catch ( const char *msg ) {
+                if ( msg == "Exit" ) return;
+            }
             line = 0, column = 0;
         }
     }
@@ -590,7 +600,7 @@ bool Function::printAST() {
         if ( cur->value == "(" && direction == "right" ) continue; // 若該節點為右節點，則不需印出左括弧
         if ( cur->type != TEMP ) {
             // 除了連結節點外，其他節點皆需印出
-            if ( cur->type == END ) --left_paren; // 結束一個S-expression，則縮排
+            if ( cur->type == END || (cur->value == "nil" && direction == "right") ) --left_paren; // 結束一個S-expression，則縮排
             else if ( cur->type == LINK && direction == "right" ) continue; // 作為右子樹的連結節點，不須印出左括弧
             if ( !beforeIsParen ) {
                 if ( direction == "right" && cur->type != END && cur->value != "nil" ) {
@@ -599,8 +609,7 @@ bool Function::printAST() {
                     cout << "." << endl;
                 }
                 
-                if ( direction != "right" || cur->value != "nil" )
-                    for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                for ( int i = 0; i < left_paren; ++i ) cout << "  ";
             }
             else beforeIsParen = false;
 
@@ -869,6 +878,7 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
         }
         catch ( const char *msg ) {
             // clean-environment 不做其他回傳
+            if ( msg == "Exit" ) throw msg;
             function.newAST();
         }
         //function.printAST();
@@ -921,7 +931,6 @@ void Function::optimizeAST() {
     // 整理AST
     cout << "optimizeAST" << endl;
     int defined_count = user_map.size();
-    leafToRoot(root, 0);
     stack<pair<ASTNode**, ASTNode**>> st;
     st.push({&root, NULL});
 
@@ -953,7 +962,6 @@ void Function::optimizeAST() {
             printAST();
             throw "ERROR of non-function || ERROR (non-list)";
         }
-        leafToRoot(root, 0);
         printAST(); 
         return;
     }
@@ -998,18 +1006,7 @@ void Function::optimizeAST() {
         }
 
     }
-    leafToRoot(root, 0);
     printAST(); 
-}
-
-void Function::leafToRoot(ASTNode *root, int level) {
-
-    // 將AST由葉節點往根節點整理
-    cout << root->value << " " << root->type << " " << level << endl;
-    st.push({root, level});
-    if ( root->left ) leafToRoot(root->left, level + 1);
-    if ( root->right ) leafToRoot(root->right, level + 1);
-    
 }
 
 Error::Error() {
@@ -1038,24 +1035,27 @@ bool Error::unexpectedTokenOfRightParen(ASTNode *cur, string &token, int &line, 
 void Error::checkSymbol(ASTNode *cur, bool non_function) {
     /* 檢查 Symbol 是否為 CONS, QUOTE, LIST */
 
-    if ( cur->type == "QUOTE_TEMP" ) {
-        cout << "ERROR (attempt to apply non-function) : ";
-        throw cur;
-    }
-    else if ( symbol_set.find(cur->value) == symbol_set.end() 
+    if ( symbol_set.find(cur->value) == symbol_set.end() 
             && primitive_predicate.find(cur->value) == primitive_predicate.end() 
             && basic_arithmetic.find(cur->value) == basic_arithmetic.end() 
             && user_map.find(cur->value) == user_map.end()
             && cur->value.find("<procedure " ) == std::string::npos ) {
         // 若該 SYMBOL 未定義，則拋出錯誤
-        string err_str;
-        if ( cur->type == SYMBOL ) err_str = "ERROR (unbound symbol) : " + cur->value + "\n";
-        else err_str = "ERROR (attempt to apply non-function) : " + cur->value + "\n";
-        throw std::runtime_error(err_str);
+        if ( cur->type == SYMBOL ) cout << "ERROR (unbound symbol) : ";
+        else cout << "ERROR (attempt to apply non-function) : ";
+        throw cur;
+        // string err_str;
+        // if ( cur->type == SYMBOL ) err_str = "ERROR (unbound symbol) : " + cur->value + "\n";
+        // else err_str = "ERROR (attempt to apply non-function) : " + cur->value + "\n";
+        // throw std::runtime_error(err_str);
     }
-    if ( cur->type != SYMBOL && cur->type != QUOTE && cur->type != "QUOTE_DATA" ) 
+    if ( cur->type != SYMBOL && cur->type != QUOTE && cur->type != "QUOTE_DATA" ) {
         // 若在函數位置卻不是 SYMBOL ，則拋出錯誤
-        throw std::runtime_error("ERROR (attempt to apply non-function) : " + cur->value + "\n");  
+        cout << "ERROR (attempt to apply non-function) : ";
+        throw cur;
+        // throw std::runtime_error("ERROR (attempt to apply non-function) : " + cur->value + "\n");  
+    }
+        
     else if ( non_function && user_map.find(cur->value) != user_map.end() ) {
         // 若在函數位置卻為出現並未系統定義的 SYMBOL ，則拋出錯誤
         if ( user_map[cur->value]->value.find("<procedure " ) != std::string::npos ) {
@@ -1093,18 +1093,34 @@ int Symbol::countFunctionArg(ASTNode *root) {
 
 void Symbol::checkExpression(ASTNode **root, ASTNode **parent) {
 
-    if ( (*parent)->type == LEFT_PAREN || (*parent)->type == SYMBOL ) {
-        // 若為 S-expression ，則需檢查其內容
-        if ( (*parent)->type == LEFT_PAREN ) {
-            if ( root && (*root)->type == LEFT_PAREN ) checkExpression(&(*root)->left, root); // 若為左括弧，則檢查其內容
-            symbolCheck(root, parent, 1);
+    try {
+        if ( (*parent)->type == LEFT_PAREN || (*parent)->type == SYMBOL ) {
+            // 若為 S-expression ，則需檢查其內容
+            if ( (*parent)->type == LEFT_PAREN ) {
+                if ( root && (*root)->type == LEFT_PAREN ) checkExpression(&(*root)->left, root); // 若為左括弧，則檢查其內容
+                symbolCheck(root, parent, 1);
+            }
+            else {
+                symbolCheck(parent, NULL, 1);
+                // ASTNode *copy_temp = new ASTNode();
+                // copyTree(copy_temp, *parent); // 將該自定義結構複製
+                // *parent = copy_temp; // 給當前 AST 使用
+            }
         }
-        else {
-            symbolCheck(parent, NULL, 1);
-            // ASTNode *copy_temp = new ASTNode();
-            // copyTree(copy_temp, *parent); // 將該自定義結構複製
-            // *parent = copy_temp; // 給當前 AST 使用
-        }
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        /*
+        if ( *root != temp ) {
+            copyTree(*root, temp);
+            throw *root;
+        }*/
+        throw temp; // 測試中 throw parent;
     }
 }
 
@@ -1121,6 +1137,10 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
     bool non_function = false;
     if ( !parent ) non_function = true; // 若無父節點，則為單一 ATOM
     try {
+        if ( parent && !isList(*parent) ) {
+            cout << "ERROR (non-list) : ";
+            throw *parent; // 若該 S-expression 內的資料不為 List ，則拋出錯誤
+        }
         error.checkSymbol(*root, !non_function);
         procedure(*root, non_function ? NULL : *parent); // 檢查是否為系統定義的函數
         if ( isCONS(*root, non_function ? NULL : *parent) ) cout << "CONS" << endl;
@@ -1136,7 +1156,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         else if ( isCond(*root, non_function ? NULL : *parent) ) cout << "COND" << endl;
         else if ( isBegin(*root, non_function ? NULL : *parent) ) cout << "BEGIN" << endl;
         else if ( isCleanEnvironment(*root, non_function ? NULL : *parent, deep) ) cout << "CLEAN ENVIRONMENT" << endl;
-        else if ( isExit(*root, non_function ? NULL : *parent) ) return; 
+        else if ( isExit(*root, non_function ? NULL : *parent, deep) ) return; 
         else userDefined(root);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1146,12 +1166,9 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         throw msg;
     }
     catch ( ASTNode *temp ) {
-        /*
-        if ( *root != temp ) {
-            copyTree(*root, temp);
-            throw *root;
-        }*/
-        throw temp; // 測試中 throw parent;
+        ASTNode *error_tree = new ASTNode();
+        copyTree(error_tree, temp);
+        throw error_tree; // 測試中 throw parent;
     }
     
 }
@@ -1177,12 +1194,12 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
             }
 
             ASTNode **fir_node = &parent->right->left;
-            if ( (*fir_node)->type == LEFT_PAREN ) (*fir_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             checkExpression(&(*fir_node)->left, fir_node); // 檢查第一個參數
+            // if ( (*fir_node)->type == LEFT_PAREN ) (*fir_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             // copyAndLink(fir_node);
             ASTNode **sec_node = &parent->right->right->left;
-            if ( (*sec_node)->type == LEFT_PAREN ) (*sec_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             checkExpression(&(*sec_node)->left, sec_node); // 檢查第二個參數
+            // if ( (*sec_node)->type == LEFT_PAREN ) (*sec_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
             // copyAndLink(sec_node);
             // if ( (*sec_node)->value == "nil" ) (*sec_node)->type = END; // 若右子樹為 nil ，則該節點為 END
             parent->right->right = parent->right->right->left;   // 第二元素將與第一元素同階層
@@ -1277,11 +1294,7 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
 
         while ( temp->type != END ) {
             // 檢查 List 內的每個左子樹
-            if ( temp->left->type == SYMBOL ) {
-                // 若左子樹為 SYMBOL ，則需檢查其內容
-                symbolCheck(&temp->left, NULL, 1);
-                copyAndLink(&temp->left);
-            }
+            checkExpression(&temp->left->left, &temp->left); // 檢查左子樹
             temp = temp->right;
         }
     }
@@ -1326,7 +1339,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
     string key;
     try {
         key = parent->right->left->value; // 取得被定義的 SYMBOL
-        if ( parent->right->left->type != SYMBOL  || symbol_set.find(key) != symbol_set.end() ) {
+        if ( parent->right->left->type != SYMBOL  || symbol_set.find(key) != symbol_set.end() || primitive_predicate.find(key) != primitive_predicate.end() || basic_arithmetic.find(key) != basic_arithmetic.end() ) {
             // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
             cout << "ERROR (DEFINE format) : ";
             throw parent;
@@ -1347,9 +1360,10 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
     }
 
     ASTNode *value = parent->right->right->left;
-    if ( symbol_set.find(value->value) != symbol_set.end() || primitive_predicate.find(value->value) != primitive_predicate.end() || basic_arithmetic.find(value->value) != basic_arithmetic.end() )
-        symbolCheck(&value, NULL, 1); // 若為系統定義 ，則尋找其 Constructor
-    else if ( value->type == SYMBOL ) value = user_map[value->value]; // 若被參考值為使用者參數，則將其內容複寫一份進當前 AST
+    checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
+    // if ( symbol_set.find(value->value) != symbol_set.end() || primitive_predicate.find(value->value) != primitive_predicate.end() || basic_arithmetic.find(value->value) != basic_arithmetic.end() )
+    //     symbolCheck(&value, NULL, 1); // 若為系統定義 ，則尋找其 Constructor
+    // else if ( value->type == SYMBOL ) value = user_map[value->value]; // 若被參考值為使用者參數，則將其內容複寫一份進當前 AST
     user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
     cout << key << " defined" << endl;
     define = true;
@@ -1408,13 +1422,18 @@ bool Symbol::isCAR(ASTNode **root, ASTNode **parent) {
             ASTNode *check_node = (*parent)->right->left;  // 該位置應該為 LEFT_PAREN 或自定義 SYMBOL
             if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
                 checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
-                if ( !check_node->left ) 
+                if ( !check_node->left ) {
                     // 若左子樹為空，則報錯
-                    throw std::runtime_error("ERROR (car with incorrect argument type) : " + check_node->value + "\n");
+                    cout << "ERROR (car with incorrect argument type) : ";
+                    throw check_node;
+                    // throw std::runtime_error("ERROR (car with incorrect argument type) : " + check_node->value + "\n");
+                }
                 *parent = check_node->left;  // 將 list 的左子樹做為 CAR 的輸出結果
             }
             else {
-                throw std::runtime_error("ERROR (car with incorrect argument type) : " + check_node->value + "\n");
+                cout << "ERROR (car with incorrect argument type) : ";
+                throw check_node;
+                // throw std::runtime_error("ERROR (car with incorrect argument type) : " + check_node->value + "\n");
             }
     
             if ( (*parent)->type != LINK && (*parent)->type != LEFT_PAREN && (*parent)->type != "QUOTE_TEMP" && (*parent)->type != END ) {
@@ -1461,13 +1480,18 @@ bool Symbol::isCDR(ASTNode **root, ASTNode **parent) {
             ASTNode *check_node = (*parent)->right->left;  // 該位置應該為 LEFT_PAREN 或自定義 SYMBOL
             if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
                 checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
-                if ( !check_node->right ) 
+                if ( !check_node->right ) {
                     // 若左子樹為空，則報錯
-                    throw std::runtime_error("ERROR (car with incorrect argument type) : " + check_node->value + "\n");
+                    cout << "ERROR (cdr with incorrect argument type) : ";
+                    throw check_node;
+                    // throw std::runtime_error("ERROR (cdr with incorrect argument type) : " + check_node->value + "\n");
+                }
                 *parent = check_node->right;  // 將 list 的右子樹做為 CDR 的輸出結果
             }
             else {
-                throw std::runtime_error("ERROR (cdr with incorrect argument type) : " + check_node->value + "\n");
+                cout << "ERROR (cdr with incorrect argument type) : ";
+                throw check_node;
+                // throw std::runtime_error("ERROR (cdr with incorrect argument type) : " + check_node->value + "\n");
             }
 
             if ( (*parent)->type != LINK && (*parent)->type != LEFT_PAREN && (*parent)->type != "QUOTE_TEMP" && (*parent)->type != END ) {
@@ -1514,7 +1538,7 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
     }
 
     int arg = countFunctionArg(parent);   // 計算參數個數
-    cout << "arg: " << arg << endl;  // debug
+    // cout << "arg: " << arg << endl;  // debug
 
     try {
         if ( arg == 1 ) {
@@ -1559,8 +1583,10 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
                 cout << "ERROR (non-list) : ";
                 throw root;
             }
-            string errer_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
-            throw std::runtime_error(errer_str);
+            cout << "ERROR (incorrect number of arguments) : ";
+            throw root;
+            // string errer_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
+            // throw std::runtime_error(errer_str);
         }
 
     }
@@ -1576,14 +1602,14 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
 
 bool Symbol::isAtom(ASTNode *root) {
     /* 檢查該AST是否為 Atom */
-    if ( root->type == SYMBOL || root->type == INT || root->type == FLOAT || root->type == STRING || root->type == NIL || root->type == BOOL || root->type == END ) return true;
+    if ( root->type == SYMBOL || root->type == INT || root->type == FLOAT || root->type == STRING || root->type == NIL || root->type == BOOL || root->type == END  || root->type == "QUOTE_DATA" ) return true;
     return false;
 }
 
 bool Symbol::isPair(ASTNode *root) {
     /* 檢查該AST是否為 Pair */
     ASTNode *temp = root;
-    if ( root->type == "QUOTE_TEMP" )
+    if ( root->type == "QUOTE_TEMP" || root->type == LEFT_PAREN )
         // 若為 QUOTE ，則該 AST 內部的 S-expression 為 Pair
         return true;
     return false;
@@ -1593,10 +1619,10 @@ bool Symbol::isList(ASTNode *root) {
     /* 檢查該AST是否為List */
     ASTNode *temp = root;
 
-    while ( temp->type != END ) {
+    while ( temp->type != END && temp->value != "nil" ) {
         try {
-            if ( temp->type != LINK && temp->type != "QUOTE_TEMP" ) return false; // 若該AST並不為List，則返回false
-            else if ( temp->left->type == LEFT_PAREN ) symbolCheck(&temp->left->left, &temp->left, 1); // 檢查該 AST 內部的 S-expression
+            if ( temp->type != LEFT_PAREN && temp->type != LINK && temp->type != "QUOTE_TEMP" ) return false; // 若該AST並不為List，則返回false
+            // else if ( temp->left->type == LEFT_PAREN ) symbolCheck(&temp->left->left, &temp->left, 1); // 檢查該 AST 內部的 S-expression
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -1612,7 +1638,7 @@ bool Symbol::isList(ASTNode *root) {
 
 bool Symbol::isNull(ASTNode *root) {
     /* 檢查該 AST 是否為 NIL */
-    if ( root->type == NIL || (root->type == BOOL && root->value == "nil") ) return true;
+    if ( root->type == NIL || root->type == END || (root->type == BOOL && root->value == "nil") ) return true;
     return false;
 }
 
@@ -1700,7 +1726,8 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
                         compare_result = "#t";
                     result = count_node->left; // 將當前數字儲存
                 }
-
+                else if ( root->value == "or" && result->value != "nil" ) break; // 若為 or 運算式，則將結果不為 false 退出
+                else if ( root->value == "and" && result->value == "nil" ) break; // 若為 and 運算式，則將結果為 false 退出
                 count_node = count_node->right;  // 接續下一個數字
             }
             // if ( root->value == "and" ) {
@@ -1751,8 +1778,10 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
                 cout << "ERROR (non-list) : ";
                 throw root;
             }*/
-            string errer_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
-            throw std::runtime_error(errer_str);
+            cout << "ERROR (incorrect number of arguments) : ";
+            throw root;
+            // string errer_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
+            // throw std::runtime_error(errer_str);
         }
     }
     catch ( const std::runtime_error &msg ) {
@@ -1791,7 +1820,7 @@ void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &f
             ASTNode *temp = new ASTNode();
             temp->type = BOOL;
             // 若為 not，則將結果轉為布林值
-            temp->value = ( (*result)->value == "nil" ) ? "#t" : "nil";
+            temp->value = ( (*result)->value == "nil" || (*result)->type == END ) ? "#t" : "nil";
             *result = temp; // 將結果設為布林值 
         }
         first = true; // 設定為已寫入第一筆資料
@@ -1836,11 +1865,21 @@ void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &f
             (*result)->value = to_string(stod((*result)->value) / stod(operate->value));
     }
     else if ( operand == "and" && (*result)->value != "nil" ) {
-        if ( operate->value == "nil" ) *result = operate;
+        if ( operate->type == END ) {
+            // 若為 END ，則需將其轉為 nil
+            (*result)->type = BOOL;
+            (*result)->value = "nil";
+        }
         else *result = operate;
     }
-    else if ( operand == "or" && (*result)->value == "nil" )
-        *result = operate;
+    else if ( operand == "or" && (*result)->value == "nil" ) {
+        if ( operate->type == END ) {
+            // 若為 END ，則需將其轉為 nil
+            (*result)->type = BOOL;
+            (*result)->value = "nil";
+        }
+        else *result = operate;
+    }  
     else if ( operand == ">" ) {
         copyAndLink(result); // 將當前數字複製一份，以避免覆蓋
         (*result)->value = ( stod((*result)->value) > stod(operate->value) ) ? "#t" : "nil";
@@ -1901,7 +1940,12 @@ bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
             checkExpression(&second_element->left, &second_element); // 檢查 Expression 內的內容
             bool eqv = false, equal = false;
             if ( first_element->type == STRING || second_element->type == STRING ) eqv = false;
-            else if ( isAtom(first_element) && isAtom(second_element) && first_element->value == second_element->value ) eqv = true;
+            else if ( isAtom(first_element) && isAtom(second_element) ) {
+                if ( first_element->value == second_element->value ) eqv = true;
+                else if ( (first_element->type == INT || first_element->type == FLOAT) && (second_element->type == INT || second_element->type == FLOAT) )
+                    // 若兩者皆為數字，則將其轉為浮點數比較
+                    if ( stod(first_element->value) == stod(second_element->value) ) eqv = true;
+            }
             else if ( first_element == second_element ) eqv = true; // 若兩者皆指向相同記憶體位置，則設為 eqv
     
             ASTNode *check_node = parent->right;
@@ -1939,8 +1983,10 @@ bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
                 cout << "ERROR (non-list) : ";
                 throw root;
             }
-            string error_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
-            throw std::runtime_error(error_str);
+            cout << "ERROR (incorrect number of arguments) : ";
+            throw root;
+            // string error_str = "ERROR (incorrect number of arguments) : " + root->value + "\n";
+            // throw std::runtime_error(error_str);
         }
     }
     catch ( const std::runtime_error &msg ) {
@@ -1958,8 +2004,16 @@ bool Symbol::campare(ASTNode *first_element, ASTNode *second_element) {
     if ( first_element == NULL && second_element == NULL ) return true;
     else if ( first_element == NULL || second_element == NULL ) return false;
 
-    if ( first_element->type == END && second_element->type == END ) return true;
-    else if ( first_element->value != second_element->value ) return false;
+    if ( (first_element->type == END && second_element->type == END) ) return true;
+    else if ( first_element->type == LINK && second_element->type == LINK ) 
+        return campare(first_element->left, second_element->left) && campare(first_element->right, second_element->right);
+    else if ( first_element->value != second_element->value ) {
+        string first_type = first_element->type, second_type = second_element->type;
+        if ( (first_type == INT || first_type == FLOAT) && (second_type == INT || second_type == FLOAT) )
+            // 若兩者皆為數字，則將其轉為浮點數比較
+            if ( stod(first_element->value) == stod(second_element->value) ) return true;
+        return false;
+    }
     return campare(first_element->left, second_element->left) && campare(first_element->right, second_element->right);
 }
 
@@ -1999,8 +2053,10 @@ bool Symbol::isIf(ASTNode *root, ASTNode *parent) {
                 cout << "ERROR (non-list) : ";
                 throw root;
             }
-            string error_str = "ERROR (incorrect number of arguments) : if\n";
-            throw std::runtime_error(error_str);
+            cout << "ERROR (incorrect number of arguments) : ";
+            throw root;
+            // string error_str = "ERROR (incorrect number of arguments) : if\n";
+            // throw std::runtime_error(error_str);
         }
     }
     catch ( const std::runtime_error &msg ) {
@@ -2143,11 +2199,12 @@ void Symbol::conditional(ASTNode **root, string &operand) {
                 return;
             }
             check_node = first_statement->left;
-            if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
-                // 檢查 S-expression 內的每個左子樹
-                if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, &check_node, 1);
-                else symbolCheck(&check_node, NULL, 1);
-            }
+            checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
+            // if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
+            //     // 檢查 S-expression 內的每個左子樹
+            //     if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, &check_node, 1);
+            //     else symbolCheck(&check_node, NULL, 1);
+            // }
             (*root) = check_node;
         }
         else {
@@ -2158,11 +2215,12 @@ void Symbol::conditional(ASTNode **root, string &operand) {
             else {
                 // 若條件為 false，則將 S-expression 的左子樹設為第二筆 S-expression
                 check_node = second_statement;
-                if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
-                    // 檢查 S-expression 內的每個左子樹
-                    if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, &check_node, 1);
-                    else symbolCheck(&check_node, NULL, 1);
-                }
+                checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
+                // if ( check_node->type == LEFT_PAREN || check_node->type == SYMBOL ) {
+                //     // 檢查 S-expression 內的每個左子樹
+                //     if ( check_node->type == LEFT_PAREN ) symbolCheck(&check_node->left, &check_node, 1);
+                //     else symbolCheck(&check_node, NULL, 1);
+                // }
                 (*root) = check_node;
             }
         }
@@ -2207,9 +2265,10 @@ bool Symbol::isBegin(ASTNode *root, ASTNode *parent) {
             
         while ( check_node->type != END ) {
             // 檢查 S-expression 內的每個左子樹
-            if ( check_node->left->type == SYMBOL ) {
-                symbolCheck(&check_node->left, NULL, 1);
-            }
+            checkExpression(&check_node->left->left, &check_node->left); // 檢查 Expression 內的內容
+            // if ( check_node->left->type == SYMBOL ) {
+            //     symbolCheck(&check_node->left, NULL, 1);
+            // }
 
             if ( check_node->right->type == END ) {
                 // 若為最後一筆 S-expression，則將其設為結果
@@ -2292,7 +2351,7 @@ void Symbol::procedure(ASTNode *root, ASTNode *parent) {
     }
 }
 
-bool Symbol::isExit(ASTNode *root, ASTNode *parent) {
+bool Symbol::isExit(ASTNode *root, ASTNode *parent, int deep) {
 
     if ( root->value != "exit" ) return false;
     else if ( !parent || parent->type != LEFT_PAREN ) {
@@ -2300,7 +2359,13 @@ bool Symbol::isExit(ASTNode *root, ASTNode *parent) {
         root->value = "#<procedure " + root->value + ">";
         return true;
     }
-    else {
-        throw std::runtime_error("ERROR (incorrect number of arguments) : exit\n"); // 拋出錯誤
-    }
+    else if ( deep != 0 ) 
+        // 若深度不為0，則不做 EXIT function 功能，只留回傳功能
+        throw std::runtime_error("ERROR (level of EXIT)\n");
+    int arg = countFunctionArg(parent);   // 計算參數個數
+
+    if ( arg > 0 ) throw std::runtime_error("ERROR (incorrect number of arguments) : exit\n");
+    else
+        throw "Exit"; // 若深度為0，則拋出，並結束程式
+    return true;
 }
