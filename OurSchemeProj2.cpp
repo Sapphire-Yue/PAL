@@ -1086,7 +1086,7 @@ int Symbol::countFunctionArg(ASTNode *root) {
 }
 
 void Symbol::checkExpression(ASTNode **root, ASTNode **parent) {
-    /* 檢查該 Expression */
+    /* 檢查該 Expression 左子樹 */
     try {
         // 若為 S-expression ，則需檢查其內容
         if ( (*parent)->type == LEFT_PAREN ) {
@@ -1171,23 +1171,14 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
         if ( arg == 2 ) {
             ASTNode **fir_node = &parent->right->left;
             checkExpression(&(*fir_node)->left, fir_node); // 檢查第一個參數
-            // if ( (*fir_node)->type == LEFT_PAREN ) (*fir_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
-            // copyAndLink(fir_node);
             ASTNode **sec_node = &parent->right->right->left;
             checkExpression(&(*sec_node)->left, sec_node); // 檢查第二個參數
-            // if ( (*sec_node)->type == LEFT_PAREN ) (*sec_node)->type = "QUOTE_TEMP"; // 若為左括弧，則將其轉為 QUOTE_TEMP
-            // copyAndLink(sec_node);
-            // if ( (*sec_node)->value == "nil" ) (*sec_node)->type = END; // 若右子樹為 nil ，則該節點為 END
             parent->right->right = parent->right->right->left;   // 第二元素將與第一元素同階層
     
             // 將 dotted pair 提高一個階層放置
             parent->type = "QUOTE_TEMP";
             parent->left = parent->right->left;
             parent->right = parent->right->right; 
-    
-            // // 檢查 CONS 內的 SYMBOL 是否為定義過的
-            // if ( parent->left->type == SYMBOL ) error.checkSymbol(parent->left, false);
-            // if ( parent->right->type == SYMBOL ) error.checkSymbol(parent->right, false);
         }
         else {
             throw std::runtime_error("ERROR (incorrect number of arguments) : cons\n");
@@ -1200,7 +1191,6 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
         throw temp;
     }
 
-    
     return true;
     
 }
@@ -1257,17 +1247,6 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
     int arg = countFunctionArg(parent);   // 計算參數個數
     ASTNode *temp = parent->right;
     try {
-        ASTNode *new_root = new ASTNode(); // 新建一個 AST 以供檢查
-        copyTree(new_root, temp); // 複製一份 AST 以供檢查
-        bool checkList = isList(new_root);
-        if ( !checkList ) {
-            // 若該 S-expression 內的資料不為 List ，則拋出錯誤
-            cout << "ERROR (non-list) : ";
-            throw parent;
-        }
-        parent->right = new_root; // 將 parent->right 指向檢查後的 AST
-        temp = parent->right;
-
         while ( temp->type != END ) {
             // 檢查 List 內的每個左子樹
             checkExpression(&temp->left->left, &temp->left); // 檢查左子樹
@@ -1286,6 +1265,7 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
     parent->left = parent->right->left;   
     parent->right = parent->right->right;
     if ( !parent->left && !parent->right ) {
+        // 若該 list 為空，則將其轉為 nil
         parent->type = BOOL;
         parent->value = "nil";
     }
@@ -1315,16 +1295,12 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
     string key;
     try {
         key = parent->right->left->value; // 取得被定義的 SYMBOL
-        if ( (parent->right->left->type != SYMBOL && parent->right->left->type != "QUOTE_DATA")  || symbol_set.find(key) != symbol_set.end() || primitive_predicate.find(key) != primitive_predicate.end() || basic_arithmetic.find(key) != basic_arithmetic.end() ) {
+        if ( (parent->right->left->type != SYMBOL && parent->right->left->type != "QUOTE_DATA")  
+            || symbol_set.find(key) != symbol_set.end() 
+            || primitive_predicate.find(key) != primitive_predicate.end() 
+            || basic_arithmetic.find(key) != basic_arithmetic.end() ) {
             // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
             cout << "ERROR (DEFINE format) : ";
-            throw parent;
-        }
-
-        bool checkList = isList(parent->right);
-        if ( !checkList ) {
-            // 若該 S-expression 內的資料不為 List ，則拋出錯誤
-            cout << "ERROR (non-list) : ";
             throw parent;
         }
     }
@@ -1337,9 +1313,6 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
 
     ASTNode *value = parent->right->right->left;
     checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
-    // if ( symbol_set.find(value->value) != symbol_set.end() || primitive_predicate.find(value->value) != primitive_predicate.end() || basic_arithmetic.find(value->value) != basic_arithmetic.end() )
-    //     symbolCheck(&value, NULL, 1); // 若為系統定義 ，則尋找其 Constructor
-    // else if ( value->type == SYMBOL ) value = user_map[value->value]; // 若被參考值為使用者參數，則將其內容複寫一份進當前 AST
     user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
     cout << key << " defined" << endl;
     define = true;
