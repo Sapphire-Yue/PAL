@@ -474,7 +474,7 @@ void Function::checkTypeOfAtom(string &atom, string &type) {
     else if ( this->atom.isDOT(atom) ) type = DOT;
     else if ( this->atom.isFLOAT(atom) ) type = FLOAT;
     else if ( this->atom.isNIL(atom) ) type = NIL;
-    else if ( this->atom.isT(atom) ) type = BOOL;
+    else if ( this->atom.isT(atom) ) type = T;
     else if ( this->atom.isQUOTE(atom) ) type = QUOTE;
     else type = SYMBOL;
 }
@@ -598,45 +598,38 @@ bool Function::printAST() {
         if ( cur->right ) st.push({cur->right, "right"});
         if ( cur->left ) st.push({cur->left, "left"});
 
-        if ( cur->value == "(" && direction == "right" ) continue; // 若該節點為右節點，則不需印出左括弧
-        if ( cur->type != TEMP ) {
-            // 除了連結節點外，其他節點皆需印出
-            if ( cur->type == END || (cur->value == "nil" && direction == "right") ) --left_paren; // 結束一個S-expression，則縮排
-            else if ( cur->type == LINK && direction == "right" ) continue; // 作為右子樹的連結節點，不須印出左括弧
-            if ( !beforeIsParen ) {
-                if ( direction == "right" && cur->type != END && cur->value != "nil" ) {
-                    // 若該節點為右節點，且內容不為左括弧以及結束節點，則印出點
-                    for ( int i = 0; i < left_paren; ++i ) cout << "  ";
-                    cout << "." << endl;
-                }
-                
+        if ( (cur->type == END || cur->value == "nil") && direction == "right") --left_paren; // 結束一個S-expression，則縮排
+        if ( !beforeIsParen && (direction != "right" || (!cur->left && !cur->right) ) ) {
+            if ( direction == "right" && cur->type != END && cur->value != "nil" && !cur->left && !cur->right ) {
+                // 若該節點為右節點，且內容不為左括弧以及結束節點，則印出點
                 for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                cout << "." << endl;
             }
-            else beforeIsParen = false;
-
-            if ( cur->value == "(" || cur->type == LINK ) {
-                ++left_paren;
-                cout << "( ";
-                beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
-            }
-            else if ( cur->type == END ) {
-                if ( left_paren < 0 ) cout << "nil" << endl;
-                else cout << ")" << endl;
-            }
-            else {
-                if ( direction != "right" || cur->value != "nil" ) {
-                    if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
-                    cout << cur->value << endl;
-                }
-                if ( !cur->right && direction == "right" ) {
-                    --left_paren;
-                    for ( int i = 0; i < left_paren; ++i ) cout << "  ";
-                    cout << ")" << endl; // 若該節點為右節點結尾，則印出右括弧
-                }
-            }
+            
+            for ( int i = 0; i < left_paren; ++i ) cout << "  ";
         }
-        
-        
+        else beforeIsParen = false;
+
+        if ( direction != "right" && cur->left && cur->right ) {
+            ++left_paren;
+            cout << "( ";
+            beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
+        }
+        else if ( cur->type == END ) {
+            if ( direction != "right" ) cout << "nil" << endl;
+            else cout << ")" << endl;
+        }
+        else if ( !cur->left && !cur->right ) {
+            if ( direction != "right" || cur->value != "nil" ) {
+                if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
+                cout << cur->value << endl;
+            }
+            if ( direction == "right" ) {
+                --left_paren;
+                for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                cout << ")" << endl; // 若該節點為右節點結尾，則印出右括弧
+            }    
+        }
     }
     cout << "\n> ";
     newAST();
@@ -948,11 +941,6 @@ void Function::optimizeAST() {
             symbol.symbolCheck(&root, NULL, 0); // 為單一 ATOM 時，直接輸出其 SYMBOL 的 value
             ASTNode *copy_temp = new ASTNode();
             symbol.copyTree(copy_temp, root); // 將該自定義結構複製
-            if ( copy_temp->type == LINK ) {
-                // 避免 CAR CDR 取資料時沒有 LEFT_PAREN
-                copy_temp->type = LEFT_PAREN;
-                copy_temp->value = "(";
-            }
             root = copy_temp; // 給當前 AST 使用
         }
         catch ( const std::runtime_error &msg ) {
@@ -989,11 +977,6 @@ void Function::optimizeAST() {
                 symbol.symbolCheck(cur, parent, 0);
                 ASTNode *copy_temp = new ASTNode();
                 symbol.copyTree(copy_temp, *parent); // 將該自定義結構複製
-                if ( copy_temp->type == LINK ) {
-                    // 避免 CAR CDR 取資料時沒有 LEFT_PAREN
-                    copy_temp->type = LEFT_PAREN;
-                    copy_temp->value = "(";
-                }
                 *parent = copy_temp; // 給當前 AST 使用
             }
             catch ( const std::runtime_error &msg ) {
@@ -1186,7 +1169,6 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
             parent->right->right = parent->right->right->left;   // 第二元素將與第一元素同階層
     
             // 將 dotted pair 提高一個階層放置
-            parent->type = "QUOTE_TEMP";
             parent->left = parent->right->left;
             parent->right = parent->right->right; 
         }
@@ -1225,7 +1207,7 @@ bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
     
     ASTNode *new_root = parent->right->left;    // 將 QUOTE 後的 S-expression 提高一個階層
     if ( new_root->type == NIL ) {
-        parent->type = NIL;
+        parent->type = END;
         parent->value = "nil";
         parent->left = NULL;
         parent->right = NULL;
@@ -1240,7 +1222,6 @@ bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
         parent->right = NULL;
         return true;
     }
-    parent->type = "QUOTE_TEMP";
     parent->right = new_root->right;
     parent->left = new_root->left;
     return true;
@@ -1278,12 +1259,11 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
     }
 
     // 將 List 內容提高一個階層
-    parent->type = "QUOTE_TEMP";
     parent->left = parent->right->left;   
     parent->right = parent->right->right;
     if ( !parent->left && !parent->right ) {
         // 若該 list 為空，則將其轉為 nil
-        parent->type = BOOL;
+        parent->type = END;
         parent->value = "nil";
     }
     return true;
@@ -1525,7 +1505,7 @@ bool Symbol::isList(ASTNode *root) {
     /* 檢查該AST是否為List */
     ASTNode *temp = root;
     while ( temp->type != END && temp->value != "nil" ) {
-        if ( temp->type != LEFT_PAREN && temp->type != LINK && temp->type != "QUOTE_TEMP" ) 
+        if ( temp->type != LEFT_PAREN && temp->type != LINK ) 
             return false; // 若該AST並不為List，則返回false
         temp = temp->right;
     }
@@ -1559,7 +1539,7 @@ bool Symbol::isString(ASTNode *root) {
 
 bool Symbol::isBoolean(ASTNode *root) {
     /* 檢查該 AST 是否為 Boolean */
-    if ( root->type == BOOL || root->type == NIL || root->type == END ) return true;
+    if ( root->type == BOOL || root->type == NIL || root->type == END || root->type == T ) return true;
     return false;
 }
 
@@ -1659,7 +1639,7 @@ bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
                 cout << "ERROR (" + root->value + " with incorrect argument type) : "; // 找出同階層的 Function，並以此作為錯誤輸出
                 break;
             }
-            temp2 =temp2->right;
+            temp2 = temp2->right;
         }
         throw temp;
     }
@@ -1773,7 +1753,6 @@ bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
     }
 
     int arg = countFunctionArg(parent);   // 計算參數個數
-    // cout << "arg: " << arg << endl;  // debug
 
     try {
         if ( arg == 2 ) {
@@ -1830,7 +1809,7 @@ bool Symbol::campare(ASTNode *first_element, ASTNode *second_element) {
     else if ( first_element == NULL || second_element == NULL ) return false;
 
     if ( (first_element->type == END || first_element->value == "nil" ) && (second_element->type == END || second_element->value == "nil") ) return true;
-    else if ( (first_element->type == LINK || first_element->type == "QUOTE_TEMP") && (second_element->type == LINK || second_element->type == "QUOTE_TEMP") )
+    else if ( first_element->type == LINK && second_element->type == LINK )
         // 若為連接用節點，則認為相同
         return campare(first_element->left, second_element->left) && campare(first_element->right, second_element->right);
     else if ( first_element->value != second_element->value ) {
@@ -2022,7 +2001,6 @@ void Symbol::conditional(ASTNode **root) {
     catch ( ASTNode *temp ) {
         throw temp;
     }
-    
     
 }
 
