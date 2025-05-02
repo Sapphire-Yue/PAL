@@ -3,6 +3,7 @@
 #include <stack>
 #include <unordered_set>
 #include <unordered_map>
+#include <math.h>
 
 using namespace std;
 
@@ -43,7 +44,7 @@ class Atom {
         bool isSTRING(string &atom);
         bool isDOT(string &atom);
         bool isFLOAT(string &atom);
-        bool isFLOAT(string &atom, bool rounding);
+        void isFLOAT(string &atom, bool rounding);
         bool isNIL(string &atom);
         bool isT(string &atom);
         bool isQUOTE(string &atom);
@@ -615,15 +616,14 @@ bool Function::printAST() {
             cout << "( ";
             beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
         }
-        else if ( cur->type == END ) {
+        else if ( (cur->type == END || cur->value == "nil") && direction != "left" ) {
+            // 若該節點為右節點且為 END 或 nil，則印出右括弧
             if ( direction != "right" ) cout << "nil" << endl;
             else cout << ")" << endl;
         }
         else if ( !cur->left && !cur->right ) {
-            if ( direction != "right" || cur->value != "nil" ) {
-                if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
-                cout << cur->value << endl;
-            }
+            if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
+            cout << cur->value << endl;
             if ( direction == "right" ) {
                 --left_paren;
                 for ( int i = 0; i < left_paren; ++i ) cout << "  ";
@@ -716,31 +716,23 @@ bool Atom::isSTRING(string &atom) {
 bool Atom::isFLOAT(string &atom) {
     /*檢查Atom是否為浮點數*/
     int len = atom.size(), decimal = 0;
-    string num;
-    bool dot = false, interger = false, round = false;
+    bool dot = false, interger = false;
 
     for ( int i = 0; i < len; ++i ) {
         // 數字開頭可以有正負號
-        if ( i == 0 && (atom[i] == '+' || atom[i] == '-') ) {
-            if ( atom[i] == '-' ) num += '-';
+        if ( i == 0 && (atom[i] == '+' || atom[i] == '-') ) 
             continue;
-        }
         else if ( !isdigit(atom[i]) ) {
-            if ( atom[i] == '.' && !dot ) {
+            if ( atom[i] == '.' && !dot )
                 dot = true;
-                if ( !interger ) num += '0'; // 若並未輸入整數位，則補0
-                num += '.';
-            }
             else return false; // 若含非數字或點字元，則不為浮點數
         }
         else {
             if ( decimal >= 3 ) {
                 // 小數點後最多3位
-                if ( decimal == 3 && atom[i] >= '5' ) round = true; // 四捨五入
                 ++decimal;
                 continue;
             } 
-            num += atom[i];
             interger = true;
             if ( dot ) ++decimal; // 計算小數位數
         }
@@ -750,49 +742,18 @@ bool Atom::isFLOAT(string &atom) {
     return true;
 }
 
-bool Atom::isFLOAT(string &atom, bool rounding) {
-    /*檢查Atom是否為浮點數，並取浮點數後三位*/
-    int len = atom.size(), decimal = 0;
-    string num;
-    bool dot = false, interger = false, round = false;
-
-    for ( int i = 0; i < len; ++i ) {
-        // 數字開頭可以有正負號
-        if ( i == 0 && (atom[i] == '+' || atom[i] == '-') ) {
-            if ( atom[i] == '-' ) num += '-';
-            continue;
-        }
-        else if ( !isdigit(atom[i]) ) {
-            if ( atom[i] == '.' && !dot ) {
-                dot = true;
-                if ( !interger ) num += '0'; // 若並未輸入整數位，則補0
-                num += '.';
-            }
-            else return false; // 若含非數字或點字元，則不為浮點數
-        }
-        else {
-            if ( decimal >= 3 ) {
-                // 小數點後最多3位
-                if ( decimal == 3 && atom[i] >= '5' ) round = true; // 四捨五入
-                ++decimal;
-                continue;
-            } 
-            num += atom[i];
-            interger = true;
-            if ( dot ) ++decimal; // 計算小數位數
+void Atom::isFLOAT(string &atom, bool rounding) {
+    /*為浮點數，取浮點數後三位*/
+    double num = stod(atom);
+    num = round(num * 1000) / 1000; // 四捨五入至小數點後三位
+    atom = to_string(num); // 轉換為字串
+    for ( int i = 0; i < atom.size(); ++i ) {
+        if ( atom[i] == '.' ) {
+            // 若有小數點，則將其後的數字取出
+            atom = atom.substr(0, i + 4); // 小數點後最多3位
+            break;
         }
     }
-
-    if ( !interger || !dot  ) return false; // 若不含數字，則不為浮點數
-
-    while ( decimal < 3 ) {
-        // 若小數位數不足3位，則補0
-        num += '0';
-        ++decimal;
-    }
-    if ( round ) num[num.size() - 1] += 1; // 四捨五入
-    atom = num;
-    return true;
 }
 
 bool Atom::isNIL(string &atom) {
@@ -1809,7 +1770,7 @@ bool Symbol::campare(ASTNode *first_element, ASTNode *second_element) {
     else if ( first_element == NULL || second_element == NULL ) return false;
 
     if ( (first_element->type == END || first_element->value == "nil" ) && (second_element->type == END || second_element->value == "nil") ) return true;
-    else if ( first_element->type == LINK && second_element->type == LINK )
+    else if ( (first_element->type == LINK || first_element->type == LEFT_PAREN ) && (second_element->type == LINK || second_element->type == LEFT_PAREN) )
         // 若為連接用節點，則認為相同
         return campare(first_element->left, second_element->left) && campare(first_element->right, second_element->right);
     else if ( first_element->value != second_element->value ) {
