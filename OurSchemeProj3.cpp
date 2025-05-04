@@ -34,7 +34,7 @@ struct ASTNode {
     ASTNode *right;
 };
 
-unordered_map<string, ASTNode*> user_map{};
+unordered_map<string, ASTNode*> user_map{}, user_function_map{}; // 使用者定義的變數與函數
 
 class Atom {
     public:
@@ -97,13 +97,14 @@ class Symbol {
         bool isExit(ASTNode *root, ASTNode *parent, int deep);
         bool isLet(ASTNode *root, ASTNode **parent);
         bool isLambda(ASTNode *root, ASTNode **parent);
+        bool isLambdaArg(ASTNode *root, ASTNode **parent);
     private:
         Atom atom;
         Error error;
         unordered_map<string, ASTNode*> local_map, lambda_map; // 區域變數庫與 lambda 變數庫
-        int return_value;
-        bool define, lambda;
-        ASTNode *lambda_tree;
+        int return_value, lambda;
+        bool define;
+        unordered_map<string, ASTNode*> lambda_tree;
         void checkExpression(ASTNode **root, ASTNode **parent);
         void copyAndLink(ASTNode **root);
         void calculate(ASTNode *root, ASTNode **result, string &operand, bool &first);
@@ -112,7 +113,8 @@ class Symbol {
         void procedure(ASTNode **root, ASTNode *parent);
         void localDefine(ASTNode *root);
         void checkLambda(ASTNode *root);
-        ASTNode* useLambda(ASTNode *root);
+        ASTNode* useLambda(ASTNode *root, string &key);
+        void defineFunction(ASTNode *root, ASTNode *parent);
 };
 
 class Function {
@@ -906,6 +908,7 @@ void Function::optimizeAST() {
         // 若根節點為 SYMBOL ，則檢查是否存在
         try {
             symbol.symbolCheck(&root, NULL, 0); // 為單一 ATOM 時，直接輸出其 SYMBOL 的 value
+            symbol.isLambdaArg(root, NULL); // 檢查是否為 lambda 式
             ASTNode *copy_temp = new ASTNode();
             symbol.copyTree(copy_temp, root); // 將該自定義結構複製
             root = copy_temp; // 給當前 AST 使用
@@ -962,8 +965,8 @@ void Function::optimizeAST() {
                 return;
             }
         }
-
     }
+    symbol.isLambdaArg(root, NULL); // 檢查是否為 lambda 式
     printAST(); 
 }
 
@@ -1033,9 +1036,8 @@ Symbol::Symbol() {
     atom = Atom();
     error = Error(); 
     define = false;
-    lambda = false;
-    return_value = 0;
-    lambda_tree = NULL;
+    return_value = 0, lambda = 0;
+    lambda_tree.clear();
 }
 
 Symbol::~Symbol() {
@@ -1095,22 +1097,23 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         }
         error.checkSymbol(*root, non_function, lambda ? lambda_map : local_map);
         procedure(root, non_function ? NULL : *parent); // 檢查是否為系統定義的函數
-        if ( isCONS(*root, non_function ? NULL : *parent) ) cout << "CONS" << endl;
-        else if ( isQUOTE(*root, non_function ? NULL : *parent) ) cout << "QUOTE" << endl;
-        else if ( isList(*root, non_function ? NULL : *parent) ) cout << "LIST" << endl;
-        else if ( isUserDefine(*root, non_function ? NULL : *parent, deep) ) cout << "DEFINE" << endl;
-        else if ( isCAR(root, non_function ? NULL : parent) ) cout << "CAR" << endl;
-        else if ( isCDR(root, non_function ? NULL : parent) ) cout << "CDR" << endl;
-        else if ( checkPrimitivePredicate(*root, non_function ? NULL : *parent) ) cout << "PRIMITIVE PREDICATE" << endl;
-        else if ( isArithmetic(*root, non_function ? NULL : parent) ) cout << "BASIC ARITHMETIC" << endl;
-        else if ( isEqual(*root, non_function ? NULL : *parent) ) cout << "EQUAL" << endl;
-        else if ( isIf(*root, non_function ? NULL : parent) ) cout << "IF" << endl;
-        else if ( isCond(*root, non_function ? NULL : parent) ) cout << "COND" << endl;
-        else if ( isBegin(*root, non_function ? NULL : parent) ) cout << "BEGIN" << endl;
-        else if ( isCleanEnvironment(*root, non_function ? NULL : *parent, deep) ) cout << "CLEAN ENVIRONMENT" << endl;
+        if ( isCONS(*root, non_function ? NULL : *parent) ) return;
+        else if ( isQUOTE(*root, non_function ? NULL : *parent) ) return;
+        else if ( isList(*root, non_function ? NULL : *parent) ) return;
+        else if ( isUserDefine(*root, non_function ? NULL : *parent, deep) ) return;
+        else if ( isCAR(root, non_function ? NULL : parent) ) return;
+        else if ( isCDR(root, non_function ? NULL : parent) ) return;
+        else if ( checkPrimitivePredicate(*root, non_function ? NULL : *parent) ) return;
+        else if ( isArithmetic(*root, non_function ? NULL : parent) ) return;
+        else if ( isEqual(*root, non_function ? NULL : *parent) ) return;
+        else if ( isIf(*root, non_function ? NULL : parent) )return;
+        else if ( isCond(*root, non_function ? NULL : parent) ) return;
+        else if ( isBegin(*root, non_function ? NULL : parent) ) return;
+        else if ( isCleanEnvironment(*root, non_function ? NULL : *parent, deep) ) return;
         else if ( isExit(*root, non_function ? NULL : *parent, deep) ) return; 
-        else if ( isLet(*root, non_function ? NULL : parent) ) cout << "LET" << endl;
-        else if ( isLambda(*root, non_function ? NULL : parent) ) cout << "LAMBDA" << endl;
+        else if ( isLet(*root, non_function ? NULL : parent) ) return;
+        else if ( isLambda(*root, non_function ? NULL : parent) ) return;
+        else if ( isLambdaArg(*root, non_function ? NULL : parent) ) return;
         else userDefined(root);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1263,7 +1266,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
         // 若不在最上層，則報錯
         throw std::runtime_error("ERROR (level of DEFINE)\n");
     int arg = countFunctionArg(parent);   // 計算參數個數
-    if ( arg != 2 ) {
+    if ( arg < 2 ) {
         // 若參數個數不為2，則拋出錯誤
         cout << "ERROR (DEFINE format) : ";
         throw parent;
@@ -1272,23 +1275,43 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
     string key;
     try {
         key = parent->right->left->value; // 取得被定義的 SYMBOL
-        if ( (parent->right->left->type != SYMBOL && parent->right->left->type != "QUOTE_DATA")  
-            || symbol_set.find(key) != symbol_set.end() 
-            || primitive_predicate.find(key) != primitive_predicate.end() 
-            || basic_arithmetic.find(key) != basic_arithmetic.end() ) {
-            // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
+        ASTNode *value = parent->right->right->left;
+        if ( key == "(" ) {
+            key = parent->right->left->left->value; // 取得被定義的 Function 的 SYMBOL
+            defineFunction(parent->right->left->left, parent->right); // 若為 Function 定義，則進行定義
+            value = new ASTNode(); // 將 value 指向新的 ASTNode
+            value->type = SYSTEM; // 將其類型設為 SYSTEM
+            value->value = "#<procedure lambda" + key + ">"; // 將其值設為 lambda
+            user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+        }
+        else if ( (parent->right->left->type != SYMBOL && parent->right->left->type != "QUOTE_DATA") ) {
+            // 若該 SYMBOL 為系統定義，則拋出錯誤
             cout << "ERROR (DEFINE format) : ";
             throw parent;
         }
-
-        ASTNode *value = parent->right->right->left;
-        checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
-        user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+        else {
+            if ( arg != 2 ) {
+                // 若參數個數不為2，則拋出錯誤
+                cout << "ERROR (DEFINE format) : ";
+                throw parent;
+            }
+            checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
+            user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+            if ( value->value.find("lambda") != value->value.std::string::npos && lambda_tree.find(value->value.substr(18, 1)) != lambda_tree.end() ) {
+                // 若該 SYMBOL 為 lambda 定義，則將其加入 user_function_map 中
+                user_function_map[key] = lambda_tree[value->value.substr(18, 1)]; // 將定義過的 Function 加入 map 中
+                user_map[key]->value = "#<procedure lambda" + key + ">";
+            }
+        }
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
     }
     catch ( const char *msg ) {
+        if ( msg == "ERROR (DEFINE format) : " ) {
+            cout << msg << endl;
+            throw parent;
+        }
         throw msg;
     }
     catch ( ASTNode *temp ) {
@@ -1296,7 +1319,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
     }
 
     cout << key << " defined" << endl;
-    define = true;
+    define = true; // 將 define 標記設為 true
     return true;
 }
 
@@ -2081,16 +2104,18 @@ bool Symbol::isCleanEnvironment(ASTNode *root, ASTNode *parent, int deep) {
 
 void Symbol::procedure(ASTNode **root, ASTNode *parent) {
     /* 若為自定義 Symbol 函數，且內部資料為 Procedure 系統函數，則需進行轉換 */
-    if ( user_map.find((*root)->value) != user_map.end() ) {
-        if ( user_map[(*root)->value]->type == SYSTEM ) {
-            if ( parent && parent->type == LEFT_PAREN ) {
-                // 若父節點為 LEFT_PAREN ，則運行 procedure function 功能
-                (*root)->value = user_map[(*root)->value]->value.substr(12, user_map[(*root)->value]->value.size() - 13); // 去除 <procedure 和 >
+    if ( user_map.find((*root)->value) != user_map.end() && user_map[(*root)->value]->type == SYSTEM ) {
+        if ( parent && parent->type == LEFT_PAREN ) {
+            // 若父節點為 LEFT_PAREN ，則運行 procedure function 功能
+            if ( user_function_map.find((*root)->value) != user_function_map.end() ) {
+                lambda_tree[(*root)->value] = user_function_map[(*root)->value]; // 將其設為 lambda 函數
+                copyAndLink(&lambda_tree[(*root)->value]); // 將該自定義結構複製
             }
-            else {
-                (*root)->value = user_map[(*root)->value]->value; // 若父節點不為 LEFT_PAREN ，則不做 procedure function 功能，只留回傳功能
-                (*root)->type = SYSTEM; // 將其設為系統函數
-            }
+            (*root)->value = user_map[(*root)->value]->value.substr(12, user_map[(*root)->value]->value.size() - 13); // 去除 <procedure 和 >
+        }
+        else {
+            (*root)->value = user_map[(*root)->value]->value; // 若父節點不為 LEFT_PAREN ，則不做 procedure function 功能，只留回傳功能
+            (*root)->type = SYSTEM; // 將其設為系統函數
         }
     }
     else if ( (*root)->type == SYSTEM ) {
@@ -2143,7 +2168,7 @@ bool Symbol::isLet(ASTNode *root, ASTNode **parent) {
             cout << "ERROR (LET format) : ";
             throw *parent;
         }
-        local_map.clear(); // 清除區域變數庫
+        unordered_map<string, ASTNode *> temp_map = local_map; // 紀錄當前的區域變數庫
         localDefine((*parent)->right->left); // 將區域變數寫入區域變數庫
 
         ASTNode *work_node = (*parent)->right->right; // 該位置應該為需運行的 S-expression
@@ -2155,7 +2180,7 @@ bool Symbol::isLet(ASTNode *root, ASTNode **parent) {
             
             work_node = work_node->right; // 接續下一個 S-expression
         }
-        local_map.clear(); // 清除區域變數庫
+        local_map = temp_map; // 將當前的區域變數庫設為之前的區域變數庫
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
@@ -2235,14 +2260,7 @@ bool Symbol::isLambda(ASTNode *root, ASTNode **parent) {
     int arg = countFunctionArg(*parent);   // 計算參數個數
 
     try {
-        if ( lambda_tree ) {
-            // 若 lambda_tree 存在，依照其 Function 回傳內容
-            lambda = true; // 設定 lambda 標記
-            *parent = useLambda((*parent)->right);
-            lambda = false; // 清除 lambda 標記
-            lambda_map.clear(); // 清除 lambda_map
-        }
-        else if ( arg < 2 ) {
+        if ( arg < 2 ) {
             // 若參數個數小於 2，則拋出錯誤
             cout << "ERROR (LAMBDA format) : ";
             throw *parent;
@@ -2250,12 +2268,11 @@ bool Symbol::isLambda(ASTNode *root, ASTNode **parent) {
         else {
             // 創建 LAMBDA 樹，以供後續參數使用
             checkLambda((*parent)->right); // 檢查 LAMBDA 的格式
-            (*parent)->value = "#<procedure " + root->value + ">";
+            (*parent)->value = "#<procedure " + root->value + to_string(lambda_tree.size() - 1) + ">";
             (*parent)->type = SYSTEM; // 將其設為系統函數
-            (*parent)->left = NULL;
-            (*parent)->right = NULL;
+            (*parent)->left = NULL; // 將其左子樹設為 NULL
+            (*parent)->right = NULL; // 將其右子樹設為 NULL
         }
-            
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
@@ -2292,24 +2309,43 @@ void Symbol::checkLambda(ASTNode *root) {
             throw "ERROR (LAMBDA format) : ";
         define_node = define_node->right; // 接續下一個被定義的 SYMBOL
     }
-    lambda_tree = root;
+    lambda_tree[to_string(lambda_tree.size())] = root;
 }
 
-ASTNode* Symbol::useLambda(ASTNode *root) {
-    /* 依照參數回傳相應結果 */
-    ASTNode *arg_node = root, *check_node = lambda_tree->left;
+bool Symbol::isLambdaArg(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 LAMBDA 的參數 */
+    if ( root->value.find("lambda") == root->value.std::string::npos ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 LAMBDA function 功能，只留回傳功能
+        root->value = "#<procedure lambda>";
+        root->type = SYSTEM;
+        return true;
+    }
 
+    string key = root->value.substr(6, root->value.size()); // 取出隱藏在 LAMBDA 標記後的參數名稱
+    unordered_map<string, ASTNode*> temp_map = lambda_map; // 紀錄當前的 lambda_map
+    ++lambda; // 設定 lambda 標記
+    *parent = useLambda((*parent)->right, key); // 將 LAMBDA 的參數寫入 lambda_map 中，並取回
+    --lambda; // 清除 lambda 標記
+    lambda_map = temp_map; // 將當前的 lambda_map 設為之前的 lambda_map
+    return true;
+}
+
+ASTNode* Symbol::useLambda(ASTNode *root, string &key) {
+    /* 依照參數回傳相應結果 */
+    ASTNode *arg_node = root, *check_node = lambda_tree[key]->left;
+    unordered_map<string, ASTNode*> temp_map; // 紀錄當前的 lambda_map
     try {
         while ( check_node->type != END && check_node->value != "nil" ) {
             // 檢查 S-expression 內的每個左子樹
             string key = check_node->left->value; // 取得被定義的 SYMBOL
-
             if ( arg_node->type == END )
                 // 若該定輸入資料不足，則拋出錯誤
                 throw std::runtime_error("ERROR (incorrect number of arguments) : lambda\n");
+
             ASTNode *value = arg_node->left; // 取得被定義的 SYMBOL 的值
-            
-            lambda_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+            checkExpression(&value->left, &value); // 檢查被定義的內容
+            temp_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
     
             check_node = check_node->right; // 接續下一個被定義的 SYMBOL
             arg_node = arg_node->right; // 接續下一個被定義內容
@@ -2318,10 +2354,11 @@ ASTNode* Symbol::useLambda(ASTNode *root) {
             // 若該定輸入資料過多，則拋出錯誤
             throw std::runtime_error("ERROR (incorrect number of arguments) : lambda\n");
 
-        ASTNode *function_node = lambda_tree->right; // 需運行的 S-expression
+        lambda_map = temp_map; // 將當前的 lambda_map 設為目前的 lambda_map
+        ASTNode *function_node = lambda_tree[key]->right; // 需運行的 S-expression
         while ( function_node->type != END ) {
             // 檢查 S-expression 內的每個左子樹
-            checkExpression(&function_node->left->left, &function_node->left); // 檢查 Expression 內的內容
+            checkExpression(&function_node->left->left, &function_node->left); // 檢查 S-expression 內的內容
             if ( function_node->right->type == END )
                 // 若為最後一筆 S-expression，則將其設為結果
                 return function_node->left;
@@ -2339,4 +2376,16 @@ ASTNode* Symbol::useLambda(ASTNode *root) {
     }
     
     return NULL; // 若無法回傳，則回傳 NULL
+}
+
+void Symbol::defineFunction(ASTNode *root, ASTNode *parent) {
+    /* 將該 function 以 SYMBOL 定義 */
+
+    if ( root->type != SYMBOL )
+        throw "ERROR (DEFINE format) : "; // 若定義名稱不為 SYMBOL，則拋出錯誤
+    
+    ASTNode *function = parent;
+    function->left = function->left->right; // 該位置為 function 的 Arguments
+
+    user_function_map[root->value] = function; // 將該 function 加入 user_function_map 中
 }
