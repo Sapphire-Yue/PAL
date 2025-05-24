@@ -58,7 +58,7 @@ class Error {
         // bool unexpectedTokenOfAtomOrLeftParen(string &token, int &line, int &column);
         // bool noClosingQuote(int &line, int &column);
         // bool endOfFile();
-        void checkSymbol(ASTNode *cur, bool non_function, unordered_map<string, ASTNode*> local_map);
+        void checkSymbol(ASTNode *cur, bool non_function, bool lambda, stack<unordered_map<string, ASTNode*>> local_map);
         
 };
 
@@ -101,7 +101,7 @@ class Symbol {
     private:
         Atom atom;
         Error error;
-        unordered_map<string, ASTNode*> local_map, lambda_map; // 區域變數庫與 lambda 變數庫
+        stack<unordered_map<string, ASTNode*>> local_map; // 區域變數庫
         int return_value, lambda;
         bool define;
         unordered_map<string, ASTNode*> lambda_tree;
@@ -993,14 +993,30 @@ bool Error::unexpectedTokenOfRightParen(ASTNode *cur, string &token, int &line, 
 
 }
 
-void Error::checkSymbol(ASTNode *cur, bool non_function, unordered_map<string, ASTNode*> local_map) {
+void Error::checkSymbol(ASTNode *cur, bool non_function, bool lambda, stack<unordered_map<string, ASTNode*>> local_map) {
     /* 檢查 Symbol 是否為 CONS, QUOTE, LIST, 或自定義變數等 */
 
-    if ( symbol_set.find(cur->value) == symbol_set.end() 
+    bool isLocal = false, localSystem = false;
+    ASTNode *localVar = NULL;
+    stack<unordered_map<string, ASTNode*>> local_map_temp = local_map;
+    while ( !local_map_temp.empty() ) {
+        unordered_map<string, ASTNode*> local = local_map_temp.top();
+        if ( local.find(cur->value) != local.end() ) {
+            // 區域變數
+            if ( local[cur->value]->type == SYSTEM )
+                localSystem = true;
+            isLocal = true;
+            localVar = local[cur->value];
+            break;
+        }
+        else if ( lambda ) break; // 若為 lambda 式，則只需檢查最上層的區域變數
+        local_map_temp.pop();
+    }
+
+    if ( !isLocal && symbol_set.find(cur->value) == symbol_set.end() 
             && primitive_predicate.find(cur->value) == primitive_predicate.end() 
             && basic_arithmetic.find(cur->value) == basic_arithmetic.end() 
             && user_map.find(cur->value) == user_map.end()
-            && local_map.find(cur->value) == local_map.end()
             && cur->value.find("<procedure " ) == std::string::npos ) {
         // 若該 SYMBOL 未定義，則拋出錯誤
         if ( cur->type == SYMBOL ) cout << "ERROR (unbound symbol) : ";
@@ -1014,11 +1030,11 @@ void Error::checkSymbol(ASTNode *cur, bool non_function, unordered_map<string, A
             cout << "ERROR (attempt to apply non-function) : ";
             throw cur;
         }
-        else if ( local_map.find(cur->value) != local_map.end() ) {
+        else if ( isLocal ) {
             // 區域變數
-            if ( local_map[cur->value]->type == SYSTEM ) return; // 若為系統定義的函數，則不需拋出錯誤
+            if ( localSystem ) return; // 若為系統定義的函數，則不需拋出錯誤
             cout << "ERROR (attempt to apply non-function) : ";
-            throw local_map[cur->value];
+            throw localVar;
         }
         else if ( user_map.find(cur->value) != user_map.end() ) {
             // 全域變數
@@ -1095,7 +1111,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
             cout << "ERROR (non-list) : ";
             throw *parent; // 若該 S-expression 內的資料不為 List ，則拋出錯誤
         }
-        error.checkSymbol(*root, non_function, lambda ? lambda_map : local_map);
+        error.checkSymbol(*root, non_function, lambda, local_map); // 檢查是否為系統定義的函數
         procedure(root, non_function ? NULL : *parent); // 檢查是否為系統定義的函數
         if ( isCONS(*root, non_function ? NULL : *parent) ) return;
         else if ( isQUOTE(*root, non_function ? NULL : *parent) ) return;
@@ -1338,21 +1354,35 @@ void Symbol::userDefined(ASTNode **root, ASTNode **parent) {
     if ( (*root)->type == SYSTEM ) return; // 若該 SYMBOL 為系統定義過的，則不做任何處理
     // 若該 SYMBOL 為定義過的，則將其指向進當前 AST
     string key = (*root)->value;
-    
+    bool isLocal = false, isLambda = false;
+
     try {
-        if ( !lambda && local_map.find(key) != local_map.end() )
-        // 若該 SYMBOL 為當前區域定義過的，則將其指向進當前 AST
-            *root = local_map[key]; // 將區域變數內容指向進當前 AST
-        else if ( lambda && lambda_map.find(key) != lambda_map.end() ) 
+        if ( !lambda ) {
+            stack<unordered_map<string, ASTNode*>> local_map_temp = local_map; // 將當前的 local_map 複製一份
+            while ( !local_map_temp.empty() ) {
+                // 若該 SYMBOL 為當前區域定義過的，則將其指向進當前 AST
+                unordered_map<string, ASTNode*> local = local_map_temp.top(); // 取得當前區域的變數
+                if ( local.find(key) != local.end() ) {
+                    // 區域變數
+                    *root = local[key]; // 將區域變數內容指向進當前 AST
+                    isLocal = true;
+                    break;
+                }
+                local_map_temp.pop(); // 將當前區域的變數移除
+            }
+        }
+        else if ( lambda && !local_map.empty() && local_map.top().find(key) != local_map.top().end() ) {
             // 若該 SYMBOL 為當前 Lambda 定義過的，則將其指向進當前 AST
-            *root = lambda_map[key]; // 將 Lambda 內容指向進當前 AST
-        else 
-            // 若該 SYMBOL 為全域變數定義過的，則將其指向進當前 AST
+            *root = local_map.top()[key]; // 將 Lambda 內容指向進當前 AST
+            isLambda = true;
+        }
+        
+        if ( !isLocal && !isLambda )
+            // 若該 SYMBOL 不為區域變數或 Lambda 定義
+            // 則該 SYMBOL 為全域變數定義過的，將其指向進當前 AST
             *root = user_map[key]; // 將全域變數內容指向進當前 AST
 
-        if ( (*root)->type == SYMBOL ) 
-            userDefined(root, parent); // 若依舊為 SYMBOL ，則需繼續尋找其內容
-        else if ( parent && (*parent)->type == LEFT_PAREN ) 
+        if ( parent && (*parent)->type == LEFT_PAREN ) 
             checkExpression(root, parent); // 檢查其內容
     }
     catch ( const std::runtime_error &msg ) {
@@ -2131,24 +2161,39 @@ bool Symbol::isCleanEnvironment(ASTNode *root, ASTNode *parent, int deep) {
 
 void Symbol::procedure(ASTNode **root, ASTNode *parent) {
     /* 若為自定義 Symbol 函數，且內部資料為 Procedure 系統函數，則需進行轉換 */
-    if ( lambda && lambda_map.find((*root)->value) != lambda_map.end()
-        || !lambda && local_map.find((*root)->value) != local_map.end() ) return; // 若為 lambda 函數或區域函數，則不需進行轉換
-    if ( user_map.find((*root)->value) != user_map.end() && user_map[(*root)->value]->type == SYSTEM ) {
+    
+    ASTNode *procedure_node = NULL;
+    stack<unordered_map<string, ASTNode *>> local_map_temp = local_map; // 複製區域變數庫
+    while ( !local_map_temp.empty() ) {
+        unordered_map<string, ASTNode*> local = local_map_temp.top(); // 取出區域變數庫的最上層
+        if ( local.find((*root)->value) != local.end() && local[(*root)->value]->type == SYSTEM ) {
+            procedure_node = local[(*root)->value]; // 若該自定義函數為 Procedure 系統函數，則抓取其節點
+            break;
+        }
+        else if ( lambda ) break; // 若為 lambda 函數，則只看最上層的區域變數庫
+        local_map_temp.pop();
+    }
+    if ( !procedure_node && user_map.find((*root)->value) != user_map.end() && user_map[(*root)->value]->type == SYSTEM )
+        // 若該自定義函數為 Procedure 系統函數，則抓取其節點
+        procedure_node = user_map[(*root)->value];
+
+    if ( procedure_node ) {
+        // 若該自定義函數為 Procedure 系統函數，則將其轉換
         if ( parent && parent->type == LEFT_PAREN ) {
             // 若父節點為 LEFT_PAREN ，則運行 procedure function 功能
-            if ( user_map[(*root)->value]->value.size() > 12 
-                && user_function_map.find(user_map[(*root)->value]->value.substr(12, user_map[(*root)->value]->value.size() - 13)) != user_function_map.end() ) {
+            if ( procedure_node->value.size() > 12 
+                && user_function_map.find(procedure_node->value.substr(12, procedure_node->value.size() - 13)) != user_function_map.end() ) {
                 // 若該自定義函數為 lambda 函數，則將其設為 lambda 函數
-                string key = user_map[(*root)->value]->value.substr(12, user_map[(*root)->value]->value.size() - 13); // 去除 <procedure 和 >
+                string key = procedure_node->value.substr(12, procedure_node->value.size() - 13); // 去除 <procedure 和 >
                 lambda_tree[key] = user_function_map[key]; // 將其設為 lambda 函數
                 copyAndLink(&lambda_tree[key]); // 將該自定義結構複製
                 (*root)->value = "lambda" + key;
             }
             else 
-                (*root)->value = user_map[(*root)->value]->value.substr(12, user_map[(*root)->value]->value.size() - 13); // 去除 <procedure 和 >
+                (*root)->value = procedure_node->value.substr(12, procedure_node->value.size() - 13); // 去除 <procedure 和 >
         }
         else {
-            (*root)->value = user_map[(*root)->value]->value; // 若父節點不為 LEFT_PAREN ，則不做 procedure function 功能，只留回傳功能
+            (*root)->value = procedure_node->value; // 若父節點不為 LEFT_PAREN ，則不做 procedure function 功能，只留回傳功能
             (*root)->type = SYSTEM; // 將其設為系統函數
         }
     }
@@ -2161,9 +2206,6 @@ void Symbol::procedure(ASTNode **root, ASTNode *parent) {
             (*root)->value = (*root)->value.substr(12, (*root)->value.size() - 13); // 去除 <procedure 和 >
         }
     }
-
-    if ( user_map.find((*root)->value) != user_map.end() && user_map[(*root)->value]->type == SYSTEM )
-        procedure(root, parent); // 若為 Symbol 且內容為 SYSTEM，則需進行轉換
 }
 
 bool Symbol::isExit(ASTNode *root, ASTNode *parent, int deep) {
@@ -2205,9 +2247,10 @@ bool Symbol::isLet(ASTNode *root, ASTNode **parent) {
             cout << "ERROR (LET format) : ";
             throw *parent;
         }
-        unordered_map<string, ASTNode *> temp_map = local_map; // 紀錄當前的區域變數庫
         localDefine((*parent)->right->left); // 將區域變數寫入區域變數庫
 
+        int temp_lambda = lambda; // 紀錄當前的 lambda
+        lambda = 0; // 設定當前的 lambda 為 0
         ASTNode *work_node = (*parent)->right->right; // 該位置應該為需運行的 S-expression
         while ( work_node->type != END ) {
             // 檢查並執行每個 S-expression
@@ -2217,7 +2260,8 @@ bool Symbol::isLet(ASTNode *root, ASTNode **parent) {
             
             work_node = work_node->right; // 接續下一個 S-expression
         }
-        local_map = temp_map; // 將當前的區域變數庫設為之前的區域變數庫
+        local_map.pop(); // 將當前的區域變數庫設為之前的區域變數庫
+        lambda = temp_lambda; // 恢復之前的 lambda
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
@@ -2241,17 +2285,16 @@ void Symbol::localDefine(ASTNode *root) {
     /* 將區域變數寫入區域變數庫 */
 
     try {
+        unordered_map<string, ASTNode*> map; // 定義區域變數庫
+
         while ( root->type != END && root->value != "nil" ) {
             if ( root->type != LEFT_PAREN && root->type != LINK )
                 // 若該定義結構有右子樹，則拋出錯誤
                 throw "ERROR (LET format) : ";
 
             ASTNode *define_node = root->left;
-            if ( define_node->type != LEFT_PAREN )
-                // 若左子樹不為 S-expression，則拋出錯誤
-                throw "ERROR (LET format) : ";
-            else if ( !isList(define_node) )
-                // 若該判斷式具備右節點，則不符合格式
+            if ( define_node->type != LEFT_PAREN || !isList(define_node) )
+                // 若左子樹不為 S-expression 或該判斷式具備右節點，則拋出錯誤
                 throw "ERROR (LET format) : ";
     
             string key = define_node->left->value; // 取得被定義的 SYMBOL
@@ -2264,13 +2307,14 @@ void Symbol::localDefine(ASTNode *root) {
 
             ASTNode *value = define_node->right->left; // 取得被定義的 SYMBOL 的值
             if ( define_node->right->right->type != END )
-                // 若該定義資料並非只有一個 S-expression，則拋出錯誤
+                // 若該定義資料不符合格式，則拋出錯誤
                 throw "ERROR (LET format) : ";
             checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
-            local_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+            map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
 
             root = root->right; // 接續下一個被定義的 SYMBOL
         }
+        local_map.push(map); // 設定為當前的區域變數庫
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
@@ -2338,7 +2382,7 @@ void Symbol::checkLambda(ASTNode *root) {
     while ( define_node->type != END && define_node->value != "nil" ) {
         // 檢查 S-expression 內的每個左子樹
         string key = define_node->left->value; // 取得被定義的 SYMBOL
-        if ( (define_node->left->type != SYMBOL && define_node->left->type != "QUOTE_DATA")  
+        if ( define_node->left->type != SYMBOL
                 || symbol_set.find(key) != symbol_set.end() 
                 || primitive_predicate.find(key) != primitive_predicate.end() 
                 || basic_arithmetic.find(key) != basic_arithmetic.end() )
@@ -2360,11 +2404,12 @@ bool Symbol::isLambdaArg(ASTNode *root, ASTNode **parent) {
     }
 
     string key = root->value.substr(6, root->value.size()); // 取出隱藏在 LAMBDA 標記後的參數名稱
-    unordered_map<string, ASTNode*> temp_map = lambda_map; // 紀錄當前的 lambda_map
-    ++lambda; // 設定 lambda 標記
+    int lambda_temp = lambda; // 紀錄當前的 lambda
+
+    if ( atom.isINT(key) ) ++lambda; // 設定 lambda 標記
     *parent = useLambda((*parent)->right, key); // 將 LAMBDA 的參數寫入 lambda_map 中，並取回
-    --lambda; // 清除 lambda 標記
-    lambda_map = temp_map; // 將當前的 lambda_map 設為之前的 lambda_map
+    local_map.pop(); // 將 user_define_function_arg 從區域變數庫中移除
+    lambda = lambda_temp; // 恢復之前的 lambda
     return true;
 }
 
@@ -2392,7 +2437,9 @@ ASTNode* Symbol::useLambda(ASTNode *root, string &key) {
             // 若該定輸入資料過多，則拋出錯誤
             throw std::runtime_error("ERROR (incorrect number of arguments) : lambda\n");
 
-        lambda_map = temp_map; // 將當前的 lambda_map 設為目前的 lambda_map
+        if ( !atom.isINT(key) ) lambda = 0; // 設定當前的 lambda 為 0
+        local_map.push(temp_map); // 將 lambda_arg 寫入區域變數庫
+
         ASTNode *function_node = lambda_tree[key]->right; // 需運行的 S-expression
         copyAndLink(&function_node); // 將該自定義結構複製
         while ( function_node->type != END ) {
