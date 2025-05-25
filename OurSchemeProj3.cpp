@@ -114,7 +114,7 @@ class Symbol {
         void localDefine(ASTNode *root);
         void checkLambda(ASTNode *root);
         ASTNode* useLambda(ASTNode *root, string &key);
-        void defineFunction(ASTNode *root, ASTNode *parent);
+        void defineFunction(string &key, ASTNode *parent);
 };
 
 class Function {
@@ -1290,7 +1290,15 @@ bool Symbol::isList(ASTNode *root, ASTNode *parent) {
     try {
         while ( temp->type != END ) {
             // 檢查 List 內的每個左子樹
+            ASTNode *error = temp->left;
+            copyAndLink(&error); // 複製一份，報錯時使用
             checkExpression(&temp->left->left, &temp->left); // 檢查左子樹
+            
+            if ( !temp->left ) {
+                // 若無結果，則拋出錯誤
+                cout << "ERROR (unbound parameter) : ";
+                throw error;
+            }
             temp = temp->right;
         }
     }
@@ -1358,7 +1366,7 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
                 throw parent;
             }
 
-            defineFunction(parent->right->left->left, parent->right); // 若為 Function 定義，則進行定義
+            defineFunction(key, parent->right); // 若為 Function 定義，則進行定義
             value = new ASTNode(); // 將 value 指向新的 ASTNode
             value->type = SYSTEM; // 將其類型設為 SYSTEM
             value->value = "#<procedure " + key + ">"; // 將其值設為建構子
@@ -1490,9 +1498,15 @@ bool Symbol::isCAR(ASTNode **root, ASTNode **parent) {
     try {
         if ( arg == 1 ) {
             // 若參數個數不為1，則拋出錯誤
-            ASTNode *check_node = (*parent)->right->left;  // 分析參數
+            ASTNode *check_node = (*parent)->right->left, *temp = check_node;  // 分析參數
+            copyAndLink(&temp); // 複製一份，報錯時使用
             checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
-            if ( !check_node->left ) {
+            if ( !check_node ) {
+                // 若參數不存在，則報錯
+                cout << "ERROR (unbound parameter) : ";
+                throw temp;
+            }
+            else if ( !check_node->left ) {
                 // 若參數為 ATOM ，則報錯
                 cout << "ERROR (car with incorrect argument type) : ";
                 throw check_node;
@@ -1529,9 +1543,15 @@ bool Symbol::isCDR(ASTNode **root, ASTNode **parent) {
     try {
         if ( arg == 1 ) {
             // 若參數個數不為1，則拋出錯誤
-            ASTNode *check_node = (*parent)->right->left;  // 分析參數
+            ASTNode *check_node = (*parent)->right->left, *temp = check_node;  // 分析參數
+            copyAndLink(&temp); // 複製一份，報錯時使用
             checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
-            if ( !check_node->right ) {
+            if ( !check_node ) {
+                // 若參數不存在，則報錯
+                cout << "ERROR (unbound parameter) : ";
+                throw temp;
+            }
+            else if ( !check_node->right ) {
                 // 若左子樹為空，則報錯
                 cout << "ERROR (cdr with incorrect argument type) : ";
                 throw check_node;
@@ -1570,8 +1590,14 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
     try {
         if ( arg == 1 ) {
             // 若參數個數不為1，則拋出錯誤
-            ASTNode *check_node = parent->right->left;  // 該位置應該為需確認的 S-expression
+            ASTNode *check_node = parent->right->left, *temp = check_node;  // 該位置應該為需確認的 S-expression
+            copyAndLink(&temp); // 複製一份，報錯時使用
             checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
+            if ( !check_node ) {
+                // 若參數為 ATOM ，則報錯
+                cout << "ERROR (unbound parameter) : ";
+                throw temp;
+            }
             copyAndLink(&check_node);
             // 檢查該 S-expression 是否為原始判斷式
             bool checkPrimitive = false;
@@ -1901,8 +1927,22 @@ bool Symbol::isEqual(ASTNode *root, ASTNode *parent) {
         if ( arg == 2 ) {
             // 若參數個數不為2，則拋出錯誤
             ASTNode *first_element = parent->right->left, *second_element = parent->right->right->left;
+            ASTNode *temp1 = first_element, *temp2 = second_element;  // 該位置應該為需比較的 S-expression
+            copyAndLink(&temp1); // 複製一份，報錯時使用
+            copyAndLink(&temp2); // 複製一份，報錯時使用
             checkExpression(&first_element->left, &first_element); // 檢查 Expression 內的內容
             checkExpression(&second_element->left, &second_element); // 檢查 Expression 內的內容
+            if ( !first_element ) {
+                // 若第一個參數不存在，則報錯
+                cout << "ERROR (unbound parameter) : ";
+                throw temp1;
+            }
+            else if ( !second_element ) {
+                // 若第二個參數不存在，則報錯
+                cout << "ERROR (unbound parameter) : ";
+                throw temp2;
+            }
+
             bool eqv = false, equal = false;
             if ( first_element == second_element ) eqv = true; // 若兩者皆指向相同記憶體位置， eqv 為 true
             else if ( first_element->type == STRING || second_element->type == STRING ) eqv = false; // 若有一者為字串，則 eqv 為 false
@@ -2068,7 +2108,6 @@ bool Symbol::isCond(ASTNode *root, ASTNode **parent) {
                     result_statement = temp; // 將其設為結果
                     break;
                 }
-
             }
             check_node = check_node->right; // 接續下一個 S-expression
         }
@@ -2101,15 +2140,15 @@ void Symbol::conditional(ASTNode **root) {
     ASTNode *check_node = (*root)->left;  // 該位置應該為判別式
 
     try {
-        ASTNode *temp_root = new ASTNode();
-        copyTree(temp_root, check_node); // 將該 S-expression 複製一份，報錯時使用
-        checkExpression(&temp_root->left, &temp_root); // 檢查 Expression 內的內容
+        ASTNode *temp_root = check_node;
+        copyAndLink(&temp_root); // 將該 S-expression 複製一份，報錯時使用
+        checkExpression(&check_node->left, &check_node); // 檢查 Expression 內的內容
         bool conditional = true;
-        if ( !temp_root ) {
+        if ( !check_node ) {
             cout << "ERROR (unbound test-condition) : ";
-            throw check_node;
+            throw temp_root;
         }
-        else if ( temp_root->value == "nil" || temp_root->type == END )
+        else if ( check_node->value == "nil" || check_node->type == END )
             // 若條件為 nil，則將 conditional 設為 false
             conditional = false;
 
@@ -2373,7 +2412,7 @@ void Symbol::localDefine(ASTNode *root) {
                 // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
                 throw "ERROR (LET format) : ";
 
-            if ( define_node->right->right->type != END )
+            if ( define_node->right->type == END || define_node->right->right->type != END )
                 // 若該定義資料不符合格式，則拋出錯誤
                 throw "ERROR (LET format) : ";
 
@@ -2527,7 +2566,12 @@ ASTNode* Symbol::useLambda(ASTNode *root, string &key) {
                 cout << "ERROR (unbound parameter) : ";
                 throw temp;
             }
-            temp_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+            
+            if ( symbol_set.find(key) == symbol_set.end() 
+                && primitive_predicate.find(key) == primitive_predicate.end() 
+                && basic_arithmetic.find(key) == basic_arithmetic.end() )
+                // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
+                temp_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
     
             check_node = check_node->right; // 接續下一個被定義的 SYMBOL
             arg_node = arg_node->right; // 接續下一個被定義內容
@@ -2563,14 +2607,10 @@ ASTNode* Symbol::useLambda(ASTNode *root, string &key) {
     return NULL; // 若無法回傳，則回傳 NULL
 }
 
-void Symbol::defineFunction(ASTNode *root, ASTNode *parent) {
-    /* 將該 function 以 SYMBOL 定義 */
-
-    if ( root->type != SYMBOL )
-        throw "ERROR (DEFINE format) : "; // 若定義名稱不為 SYMBOL，則拋出錯誤
-    
+void Symbol::defineFunction(string &key, ASTNode *parent) {
+    /* 將該 function 以 SYMBOL 定義 */ 
     ASTNode *function = parent;
     function->left = function->left->right; // 該位置為 function 的 Arguments
 
-    user_function_map[root->value] = function; // 將該 function 加入 user_function_map 中
+    user_function_map[key] = function; // 將該 function 加入 user_function_map 中
 }
