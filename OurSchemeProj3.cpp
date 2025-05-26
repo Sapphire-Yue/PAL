@@ -1361,9 +1361,8 @@ bool Symbol::isUserDefine(ASTNode *root, ASTNode *parent, int deep) {
         throw parent;
     }
 
-    string key;
+    string key = parent->right->left->value; // 取得被定義的 SYMBOL
     try {
-        key = parent->right->left->value; // 取得被定義的 SYMBOL
         if ( ( parent->right->left->type != SYMBOL && key != "(" )
             || symbol_set.find(key) != symbol_set.end() 
             || primitive_predicate.find(key) != primitive_predicate.end() 
@@ -1715,8 +1714,7 @@ bool Symbol::isSymbol(ASTNode *root) {
 bool Symbol::isArithmetic(ASTNode *root, ASTNode **parent) {
     /* 檢查該 Symbol 是否為基礎運算式或比較運算式 */
     
-    if ( basic_arithmetic.find(root->value) == basic_arithmetic.end() || 
-    (root->value.size() > 14 && basic_arithmetic.find(root->value.substr(13, root->value.size() - 1)) == basic_arithmetic.end()) ) return false;
+    if ( basic_arithmetic.find(root->value) == basic_arithmetic.end() ) return false;
     else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 Arithmetic function 功能，只留回傳功能
         root->value = "#<procedure " + root->value + ">";
@@ -1857,7 +1855,6 @@ void Symbol::calculate(ASTNode *root, ASTNode **result, string &operand, bool &f
             // 若兩者皆為浮點數，則將其轉為浮點數
             (*result)->value = to_string(stod((*result)->value) + stod(operate->value));
     }
-        
     else if ( operand == "-" ) {
         if ( atom.isINT(operate->value) && atom.isINT((*result)->value) ) 
             (*result)->value = to_string(stoi((*result)->value) - stoi(operate->value));
@@ -2028,8 +2025,7 @@ bool Symbol::isIf(ASTNode *root, ASTNode **parent) {
     try {
         if ( arg == 2 || arg == 3 ) {
             // 若參數個數不為 2 或 3 ，則拋出錯誤
-            ASTNode *check_node = (*parent)->right, *temp_root = new ASTNode() ;  // 該位置應該為需運行的 S-expression
-            copyTree(temp_root, *parent); // 將該 S-expression 複製一份，報錯時使用
+            ASTNode *check_node = (*parent)->right;  // 該位置應該為需運行的 S-expression
             conditional(&check_node); // 運行判別式
             *parent = check_node; // 將判別結果設為父節點
         }
@@ -2247,27 +2243,20 @@ bool Symbol::isCleanEnvironment(ASTNode *root, ASTNode *parent, int deep) {
 
     int arg = countFunctionArg(parent);   // 計算參數個數
 
-    try {
-        if ( arg == 0 && deep == 0 ) {
-            // 若參數個數不為0，則拋出錯誤
-            // 清除環境變數
-            user_map.clear();
-            cout << "environment cleaned" << endl;
-            cout << "\n> ";
-            throw "";
-        }
-        else {
-            string error_str = "ERROR (incorrect number of arguments) : clean-environment\n";
-            if ( deep != 0 ) error_str = "ERROR (level of CLEAN-ENVIRONMENT)\n";
-            throw std::runtime_error(error_str);
-        }
+    if ( arg == 0 && deep == 0 ) {
+        // 若參數個數不為0，則拋出錯誤
+        // 清除環境變數
+        user_map.clear();
+        cout << "environment cleaned" << endl;
+        cout << "\n> ";
+        throw "";
     }
-    catch ( const std::runtime_error &msg ) {
-        throw msg;
+    else {
+        string error_str = "ERROR (incorrect number of arguments) : clean-environment\n";
+        if ( deep != 0 ) error_str = "ERROR (level of CLEAN-ENVIRONMENT)\n";
+        throw std::runtime_error(error_str);
     }
-    catch ( ASTNode *temp ) {
-        throw temp;
-    }
+
     return true;
 }
 
@@ -2508,7 +2497,7 @@ bool Symbol::isLambda(ASTNode *root, ASTNode **parent) {
 
 void Symbol::isLambdaProcedure(ASTNode *root, ASTNode **parent) {
     /* 檢查 Symbol 是否為 LAMBDA 並更新 AST */
-    if ( root->value.size() < 6 || root->value.substr(0, 6) != "lambda" && root->value.substr(0, 18) !=  "#<procedure lambda" ) return;
+    if ( root->value.size() < 18 || root->value.substr(0, 18) !=  "#<procedure lambda" ) return;
     else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 LAMBDA function 功能，只留回傳功能
         root->value = "#<procedure lambda>";
@@ -2543,16 +2532,28 @@ void Symbol::checkLambda(ASTNode *root) {
 
 bool Symbol::isLambdaArg(ASTNode *root, ASTNode **parent) {
     /* 檢查 Symbol 是否為 LAMBDA 的參數 */
-    if ( root->value.size() < 6 || root->value.substr(0, 6) != "lambda" && root->value.substr(0, 18) !=  "#<procedure lambda" ) return false;
+    if ( root->value.size() < 6 || root->value.substr(0, 6) != "lambda" ) return false;
     else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 LAMBDA function 功能，只留回傳功能
         root->type = SYSTEM;
         return true;
     }
 
-    string key = root->value.substr(6, root->value.size()); // 取出隱藏在 LAMBDA 標記後的參數名稱
-    *parent = useLambda((*parent)->right, key); // 將 LAMBDA 的參數寫入 lambda_map 中，並取回
-    local_map.pop(); // 將 user_define_function_arg 從區域變數庫中移除
+    try {
+        string key = root->value.substr(6, root->value.size()); // 取出隱藏在 LAMBDA 標記後的參數名稱
+        *parent = useLambda((*parent)->right, key); // 將 LAMBDA 的參數寫入 lambda_map 中，並取回
+        local_map.pop(); // 將 user_define_function_arg 從區域變數庫中移除
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+    
     return true;
 }
 
