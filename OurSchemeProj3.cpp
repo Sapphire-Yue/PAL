@@ -2398,7 +2398,7 @@ void Symbol::localDefine(ASTNode *root) {
 
         while ( root->type != END && root->value != "nil" ) {
             if ( root->type != LEFT_PAREN && root->type != LINK )
-                // 若該定義結構有右子樹，則拋出錯誤
+                // 確保為參數建構的儲存結構
                 throw "ERROR (LET format) : ";
 
             ASTNode *define_node = root->left;
@@ -2415,7 +2415,7 @@ void Symbol::localDefine(ASTNode *root) {
                 throw "ERROR (LET format) : ";
 
             if ( define_node->right->type == END || define_node->right->right->type != END )
-                // 若該定義資料不符合格式，則拋出錯誤
+                // 若該定義資料不符合 Pair 格式，則拋出錯誤
                 throw "ERROR (LET format) : ";
 
             ASTNode *value = define_node->right->left; // 取得被定義的 SYMBOL 的值
@@ -2508,13 +2508,9 @@ void Symbol::isLambdaProcedure(ASTNode *root, ASTNode **parent) {
 void Symbol::checkLambda(ASTNode *root) {
     /* 檢查 LAMBDA 的格式 */
     ASTNode *define_node = root->left;
-    if ( root->left->type != LEFT_PAREN && root->left->value != "nil" )
+    if ( (define_node->type != LEFT_PAREN && define_node->value != "nil") || !isList(define_node) )
         // 若該定義參數位置不為該結構，則拋出錯誤
         throw "ERROR (LAMBDA format) : ";
-    else if ( !isList(define_node) ) {
-        // 若該定義參數位置不為 List 結構，則拋出錯誤
-        throw "ERROR (LAMBDA format) : ";
-    }
 
     while ( define_node->type != END && define_node->value != "nil" ) {
         // 檢查 S-expression 內的每個左子樹
@@ -2563,30 +2559,19 @@ ASTNode* Symbol::useLambda(ASTNode *root, string &key) {
     string error_name = atom.isINT(key) ? "lambda" : key;
     if ( error_name.substr(0, 6) == "lambda" ) error_name = error_name.substr(0, 6); // 去除 lambda 的標記
     copyAndLink(&check_node); // 將該自定義結構複製
+    queue<pair<string, ASTNode*>> lambda_define;
     unordered_map<string, ASTNode*> temp_map; // 紀錄當前的 lambda_map
 
     try {
         while ( check_node->type != END && check_node->value != "nil" ) {
-            // 檢查 S-expression 內的每個左子樹
+            // 檢查參數
             string key = check_node->left->value; // 取得被定義的 SYMBOL
             if ( arg_node->type == END )
                 // 若該定輸入資料不足，則拋出錯誤
                 throw std::runtime_error("ERROR (incorrect number of arguments) : " + error_name + "\n");
 
-            ASTNode *value = arg_node->left, *temp = value; // 取得被定義的 SYMBOL 的值
-            copyAndLink(&temp); // 將該被定義複製，報錯時使用
-            checkExpression(&value->left, &value); // 檢查被定義的內容
-            if ( !value ) {
-                // 若作為參數的內容不存在，則拋出錯誤
-                cout << "ERROR (unbound parameter) : ";
-                throw temp;
-            }
-            
-            if ( symbol_set.find(key) == symbol_set.end() 
-                && primitive_predicate.find(key) == primitive_predicate.end() 
-                && basic_arithmetic.find(key) == basic_arithmetic.end() )
-                // 若該 SYMBOL 為系統定義或不存在，則拋出錯誤
-                temp_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+            ASTNode *value = arg_node->left; // 取得被定義的 SYMBOL 的值
+            lambda_define.push({key, value}); // 將被定義的 SYMBOL 和其值暫存起來
     
             check_node = check_node->right; // 接續下一個被定義的 SYMBOL
             arg_node = arg_node->right; // 接續下一個被定義內容
@@ -2595,6 +2580,20 @@ ASTNode* Symbol::useLambda(ASTNode *root, string &key) {
             // 若該定輸入資料過多，則拋出錯誤
             throw std::runtime_error("ERROR (incorrect number of arguments) : " + error_name + "\n");
 
+        while ( !lambda_define.empty() ) {
+            string key = lambda_define.front().first; // 取得被定義的 SYMBOL
+            ASTNode *value = lambda_define.front().second, *temp = value; // 取得被定義的 SYMBOL 的值
+            copyAndLink(&temp); // 將該被定義複製，報錯時使用
+
+            checkExpression(&value->left, &value); // 檢查被定義的內容
+            if ( !value ) {
+                // 若被定義的 SYMBOL 不存在，則拋出錯誤
+                cout << "ERROR (unbound parameter) : ";
+                throw temp;
+            }
+            temp_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+            lambda_define.pop();
+        }
         local_map.push({temp_map, true}); // 將 lambda_arg 寫入區域變數庫
 
         ASTNode *function_node = lambda_tree[key]->right; // 需運行的 S-expression
