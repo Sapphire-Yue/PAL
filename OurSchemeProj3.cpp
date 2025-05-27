@@ -897,7 +897,6 @@ void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bo
 
 void Function::optimizeAST() {
     // 整理AST
-    cout << "optimizeAST" << endl;
     while ( !ast.empty() ) backExpression(); // 將所有 S-expression 跳出至最外層
 
     stack<pair<ASTNode**, ASTNode**>> st;
@@ -938,6 +937,7 @@ void Function::optimizeAST() {
         // 若該 AST 不為 List 結構，則報錯
         cout << "ERROR (non-list) : ";
         printAST();
+        return;
     }
     while ( !st.empty() ) {
         ASTNode **cur = st.top().first;
@@ -1179,7 +1179,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
     catch ( ASTNode *temp ) {
         ASTNode *error_tree = new ASTNode();
         copyTree(error_tree, temp);
-        throw error_tree; // 測試中 throw parent;
+        throw error_tree;
     }
     
 }
@@ -1263,7 +1263,7 @@ bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
     }
     else if ( new_root->type != LEFT_PAREN ) {
         // 該 S-expression 內的資料為 ATOM ，則需額外定義
-        parent->type = new_root->type;
+        parent->type = "QUOTE_DATA";
         parent->value = new_root->value;
         parent->left = NULL;
         parent->right = NULL;
