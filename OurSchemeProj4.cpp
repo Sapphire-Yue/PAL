@@ -25,7 +25,7 @@ using namespace std;
 #define END "END"
 #define LINK "LINK"
 
-unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin", "clean-environment", "exit", "let", "lambda", "read", "write", "display-string", "newline", "symbol->string", "number->string", "eval"}, 
+unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin", "clean-environment", "exit", "let", "lambda", "read", "write", "display-string", "newline", "symbol->string", "number->string", "eval", "set!"}, 
                     primitive_predicate{"atom?", "pair?", "list?", "null?", "integer?", "real?", "number?", "string?", "boolean?", "symbol?", "error-object?"},
                     basic_arithmetic{"+" , "-" , "*" , "/", "not", "and", "or", ">", ">=", "<", "<=", "=", "string-append", "string>?", "string<?", "string=?"};
 
@@ -60,8 +60,6 @@ class Error {
         // bool noClosingQuote(int &line, int &column);
         // bool endOfFile();
         void checkSymbol(ASTNode *cur, bool non_function, stack<pair<unordered_map<string, ASTNode*>, bool>> local_map);
-        void readLinkAndError(ASTNode *root, ASTNode *read_node, queue<ASTNode**> &q);
-        
 };
 
 class Symbol {
@@ -103,10 +101,11 @@ class Symbol {
         bool isLambda(ASTNode *root, ASTNode **parent);
         bool isLambdaArg(ASTNode *root, ASTNode **parent);
         void isLambdaProcedure(ASTNode *root, ASTNode **parent);
-        bool isRead(ASTNode *root, ASTNode *parent);
+        bool isRead(ASTNode *root, ASTNode **parent);
         bool isWrite(ASTNode *root, ASTNode **parent);
         bool isChangeToString(ASTNode *root, ASTNode **parent);
         bool isEval(ASTNode *root, ASTNode **parent);
+        bool isSet(ASTNode *root, ASTNode **parent);
     private:
         Atom atom;
         Error error;
@@ -161,7 +160,6 @@ class Function {
         stack<pair<ASTNode*, int>> st;
         int read;
         queue<ASTNode**> read_queue; // 用於處理讀取的 ASTNode 指標
-        void copyTree(ASTNode *new_root, ASTNode *defined_tree, queue<ASTNode*> &defined_queue);
 };
 
 class Separator {
@@ -943,11 +941,10 @@ void Function::optimizeAST() {
     symbol.copyTree(root_temp, root); // 將該自定義結構複製，報錯時使用
 
     if ( read ) {
-        // 若為 read 的 S-expression，則不需報錯
-        error.readLinkAndError(read_tree, root, read_queue);
+        // 若為 read 的 S-expression，則需將其結果存入 read_queue
+        symbol.getReadQueue().push(root); // 將該 AST 給 read 使用
         --read;
         if ( read ) {
-            symbol.copyTree(read_tree, root);
             cout << "\n> ";
             newAST();
             return;
@@ -1031,9 +1028,7 @@ void Function::optimizeAST() {
                 if ( symbol.getRead() ) {
                     // 若為 read 的 S-expression，則不需報錯
                     read_tree = new ASTNode(); // 將該 AST 給 read 使用
-                    if ( symbol.getReadQueue().front() == root ) 
-                        read_queue.push(&read_tree);
-                    copyTree(read_tree, root, symbol.getReadQueue());
+                    symbol.copyTree(read_tree, root_temp); // 將該自定義結構複製
                     read = symbol.getRead(); // 設定 read 的數量
                     newAST();
                     return;
@@ -1054,30 +1049,6 @@ void Function::optimizeAST() {
     }
     else symbol.isLambdaProcedure(root, NULL); // 檢查是否為 lambda 式
     printAST(); 
-}
-
-void Function::copyTree(ASTNode *new_root, ASTNode *defined_tree, queue<ASTNode*> &defined_queue) {
-    /* 複製 AST 結構 */
-
-    new_root->type = defined_tree->type;
-    new_root->value = defined_tree->value;
-
-    if ( defined_tree->left ) {
-        new_root->left = new ASTNode();
-        if ( !defined_queue.empty() && defined_queue.front() == defined_tree->left ) {
-            read_queue.push(&(new_root->left)); // 注意：這裡應該是 new_root，不是 &new_root
-            defined_queue.pop();
-        }
-        copyTree(new_root->left, defined_tree->left, defined_queue);
-    }
-    if ( defined_tree->right ) {
-        new_root->right = new ASTNode();
-        if ( !defined_queue.empty() && defined_queue.front() == defined_tree->right) {
-            read_queue.push(&(new_root->right)); // 注意：這裡應該是 new_root，不是 &new_root
-            defined_queue.pop();
-        }
-        copyTree(new_root->right, defined_tree->right, defined_queue);
-    }
 }
 
 Error::Error() {
@@ -1155,20 +1126,6 @@ void Error::checkSymbol(ASTNode *cur, bool non_function, stack<pair<unordered_ma
         
     }
     
-}
-
-void Error::readLinkAndError(ASTNode *root, ASTNode *read_node, queue<ASTNode**> &q) {
-    /* 連接 ASTNode 與錯誤資訊 */
-    ASTNode **temp = q.front();
-    q.pop();
-    (*temp)->left->type = SYMBOL; // 設定為 QUOTE
-    (*temp)->left->value = "quote";
-
-    ASTNode *quote_node = new ASTNode();
-    quote_node->type = LINK; // 設定為連結節點
-    quote_node->left = read_node; // 將輸入的 ASTNode 連接
-    quote_node->right = (*temp)->right;
-    (*temp)->right = quote_node; // 將該 ASTNode 連接至原本的 ASTNode
 }
 
 Symbol::Symbol() {
@@ -1268,10 +1225,11 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         else if ( isLet(*root, non_function ? NULL : parent) ) return;
         else if ( isLambda(*root, non_function ? NULL : parent) ) return;
         else if ( isLambdaArg(*root, non_function ? NULL : parent) ) return;
-        else if ( isRead(*root, non_function ? NULL : *parent) ) return;
+        else if ( isRead(*root, non_function ? NULL : parent) ) return;
         else if ( isWrite(*root, non_function ? NULL : parent) ) return;
         else if ( isChangeToString(*root, non_function ? NULL : parent) ) return;
         else if ( isEval(*root, non_function ? NULL : parent) ) return;
+        else if ( isSet(*root, non_function ? NULL : parent) ) return;
         else userDefined(root, non_function ? NULL : parent);
     }
     catch ( const std::runtime_error &msg ) {
@@ -2773,23 +2731,30 @@ void Symbol::defineFunction(string &key, ASTNode *parent) {
     user_function_map[key] = function; // 將該 function 加入 user_function_map 中
 }
 
-bool Symbol::isRead(ASTNode *root, ASTNode *parent) {
+bool Symbol::isRead(ASTNode *root, ASTNode **parent) {
     /* 檢查 Symbol 是否為 READ 並更新 AST */
     if ( root->value != "read" ) return false;
-    else if ( !parent || parent->type != LEFT_PAREN ) {
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 READ function 功能，只留回傳功能
         root->value = "#<procedure " + root->value + ">";
         root->type = SYSTEM;
         return true;
     }
 
-    int arg = countFunctionArg(parent);   // 計算參數個數
+    int arg = countFunctionArg(*parent);   // 計算參數個數
 
     if ( arg > 0 ) throw std::runtime_error("ERROR (incorrect number of arguments) : read\n");
     
-    ++read; // 設定 read 加一，表示下一筆為讀入的資料
-    read_queue.push(parent); // 將該節點加入讀入佇列中
-    throw "Read"; // 拋出 Read，並等待讀入資料
+    if ( !read_queue.empty() ) {
+        // 若讀入資料，則進行處理
+        *parent = read_queue.front(); // 將讀入資料設為父節點
+        read_queue.pop(); // 將讀入資料從佇列中移除
+    }
+    else {
+        // 第一次進入讀入資料，則等待使用者輸入
+        ++read; // 設定 read 加一，表示下一筆為讀入的資料
+        throw "Read"; // 拋出 Read，並等待讀入資料
+    }
 
     return true;
 }
@@ -3014,4 +2979,81 @@ bool Symbol::isEval(ASTNode *root, ASTNode **parent) {
 
     return true;
 
+}
+
+bool Symbol::isSet(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 SET 並更新 AST */
+    if ( root->value != "set!" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 SET function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( arg != 2 ) {
+        // 若參數個數不為2，則拋出錯誤
+        cout << "ERROR (SET! format) : ";
+        throw *parent;
+    }
+
+    string key = (*parent)->right->left->value; // 取得被定義的 SYMBOL
+    try {
+        if ( ( (*parent)->right->left->type != SYMBOL )
+            || symbol_set.find(key) != symbol_set.end() 
+            || primitive_predicate.find(key) != primitive_predicate.end() 
+            || basic_arithmetic.find(key) != basic_arithmetic.end() ) {
+            // 若該 SYMBOL 為系統定義，則拋出錯誤
+            cout << "ERROR (SET! format) : ";
+            throw *parent;
+        }
+        
+        ASTNode *value = (*parent)->right->right->left, *temp = value; // 取得被定義的 SYMBOL 的值
+        copyAndLink(&temp); // 複製一份，報錯時使用
+        checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
+        if ( !value ) {
+            // 若無結果，則拋出錯誤
+            cout << "ERROR (no return value) : ";
+            throw temp;
+        }
+
+        bool local_var = false, lambda = false; // 是否為區域變數
+        queue<pair<unordered_map<string, ASTNode*>, bool>> local_queue_temp; // 將當前的 local_map 暫存
+        while ( !local_map.empty() ) {
+            // 若該 SYMBOL 為當前區域定義過的，則將其指向進當前 AST
+            unordered_map<string, ASTNode*> local = local_map.top().first; // 取得當前區域的變數
+            bool lambda_map = local_map.top().second; // 取得當前區域是否為 Lambda 定義
+            if ( !lambda && !local_var && local.find(key) != local.end() ) {
+                // 區域變數
+                local[key] = value; // 將區域變數內容指向進當前 AST
+                local_var = true; // 設定為區域變數
+            }
+            else if ( lambda_map ) lambda = true; // 若為 Lambda 定義，則不需繼續檢查
+            local_queue_temp.push({local, lambda_map}); // 將當前區域的變數庫暫存
+            local_map.pop(); // 將當前區域的變數移除
+        }
+
+        while ( !local_queue_temp.empty() ) {
+            // 將當前的 local_map 恢復
+            local_map.push(local_queue_temp.front());
+            local_queue_temp.pop();
+        }
+
+        if ( !local_var )
+            user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+        *parent = value; // 將其設為新的根節點
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+
+    return true;
 }
