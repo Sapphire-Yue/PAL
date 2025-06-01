@@ -25,7 +25,7 @@ using namespace std;
 #define END "END"
 #define LINK "LINK"
 
-unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin", "clean-environment", "exit", "let", "lambda", "read", "write", "display-string", "newline", "symbol->string", "number->string"}, 
+unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin", "clean-environment", "exit", "let", "lambda", "read", "write", "display-string", "newline", "symbol->string", "number->string", "eval"}, 
                     primitive_predicate{"atom?", "pair?", "list?", "null?", "integer?", "real?", "number?", "string?", "boolean?", "symbol?", "error-object?"},
                     basic_arithmetic{"+" , "-" , "*" , "/", "not", "and", "or", ">", ">=", "<", "<=", "=", "string-append", "string>?", "string<?", "string=?"};
 
@@ -74,7 +74,7 @@ class Symbol {
         void symbolCheck(ASTNode **root, ASTNode **parent, int deep);
         int countFunctionArg(ASTNode *root);
         bool isCONS(ASTNode *root, ASTNode *parent);
-        bool isQUOTE(ASTNode *root, ASTNode *parent);
+        bool isQUOTE(ASTNode *root, ASTNode **parent);
         bool isList(ASTNode *root, ASTNode *parent);
         bool isUserDefine(ASTNode *root, ASTNode *parent, int deep);
         void userDefined(ASTNode **root, ASTNode **parent);
@@ -106,11 +106,12 @@ class Symbol {
         bool isRead(ASTNode *root, ASTNode *parent);
         bool isWrite(ASTNode *root, ASTNode **parent);
         bool isChangeToString(ASTNode *root, ASTNode **parent);
+        bool isEval(ASTNode *root, ASTNode **parent);
     private:
         Atom atom;
         Error error;
         stack<pair<unordered_map<string, ASTNode*>, bool>> local_map; // 區域變數庫
-        bool define;
+        bool define, eval;
         int read;
         queue<ASTNode*> read_queue; // 用於處理讀取的 ASTNode 指標
         unordered_map<string, ASTNode*> lambda_tree;
@@ -1175,6 +1176,7 @@ Symbol::Symbol() {
     atom = Atom();
     error = Error(); 
     define = false;
+    eval = false; // 是否為 eval 的 S-expression
     lambda_tree.clear();
     read = 0; // 設定 read 的數量
 }
@@ -1250,7 +1252,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         error.checkSymbol(*root, non_function, local_map); // 檢查是否為系統定義的函數
         procedure(root, non_function ? NULL : *parent); // 檢查是否為系統定義的函數
         if ( isCONS(*root, non_function ? NULL : *parent) ) return;
-        else if ( isQUOTE(*root, non_function ? NULL : *parent) ) return;
+        else if ( isQUOTE(*root, non_function ? NULL : parent) ) return;
         else if ( isList(*root, non_function ? NULL : *parent) ) return;
         else if ( isUserDefine(*root, non_function ? NULL : *parent, deep) ) return;
         else if ( isCAR(root, non_function ? NULL : parent) ) return;
@@ -1269,6 +1271,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         else if ( isRead(*root, non_function ? NULL : *parent) ) return;
         else if ( isWrite(*root, non_function ? NULL : parent) ) return;
         else if ( isChangeToString(*root, non_function ? NULL : parent) ) return;
+        else if ( isEval(*root, non_function ? NULL : parent) ) return;
         else userDefined(root, non_function ? NULL : parent);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1338,57 +1341,78 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
     
 }
 
-bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
+bool Symbol::isQUOTE(ASTNode *root, ASTNode **parent) {
     /* 檢查 Symbol 是否為 QUOTE 並更新 AST */
     if ( root->value != "quote" ) return false;
-    else if ( !parent || parent->type != LEFT_PAREN ) {
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 QUOTE function 功能，只留回傳功能
         root->value = "#<procedure " + root->value + ">";
         root->type = SYSTEM;
         return true;
     }
 
-    int arg = countFunctionArg(parent);   // 計算參數個數
+    int arg = countFunctionArg(*parent);   // 計算參數個數
 
     if ( arg != 1 ) 
         // 若參數個數不為1，則拋出錯誤
         throw std::runtime_error("ERROR (incorrect number of arguments) : quote\n");
-    
-    ASTNode *new_root = parent->right->left;    // 將 QUOTE 後的 S-expression 提高一個階層
+
+    ASTNode *new_root = (*parent)->right->left;    // 將 QUOTE 後的 S-expression 提高一個階層
     if ( new_root->type == NIL ) {
-        parent->type = END;
-        parent->value = "nil";
-        parent->left = NULL;
-        parent->right = NULL;
+        (*parent)->type = END;
+        (*parent)->value = "nil";
+        (*parent)->left = NULL;
+        (*parent)->right = NULL;
         return true;
     }
     else if ( new_root->type != LEFT_PAREN ) {
         // 該 S-expression 內的資料為 ATOM ，則需額外定義
-        parent->type = new_root->type == ERROR ? ERROR : "QUOTE_DATA";
-        parent->value = new_root->value;
-        parent->left = NULL;
-        parent->right = NULL;
-        return true;
+        (*parent)->type = new_root->type == ERROR ? ERROR : "QUOTE_DATA";
+        if ( eval ) (*parent)->type = new_root->type; // 若為 eval 的 S-expression，則不需改變類型
+        (*parent)->value = new_root->value;
+        (*parent)->left = NULL;
+        (*parent)->right = NULL;
     }
-    parent->right = new_root->right;
-    parent->left = new_root->left;
-    stack<ASTNode*> st;
-    st.push(parent);
-    while ( !st.empty() ) {
-        ASTNode *cur = st.top();
-        st.pop();
-        if ( cur->left ) {
-            // 若有左子樹，則將其類型設為 QUOTE_DATA
-            if ( cur->left->type == SYMBOL ) cur->left->type = "QUOTE_DATA";
-            st.push(cur->left);
-        }
-        if ( cur->right ) {
-            // 若有右子樹，則將其類型設為 QUOTE_DATA
-            if ( cur->right->type == SYMBOL ) cur->right->type = "QUOTE_DATA";
-            st.push(cur->right);
+    else {
+        (*parent)->right = new_root->right;
+        (*parent)->left = new_root->left;
+        stack<ASTNode*> st;
+        st.push(*parent);
+        while ( !st.empty() ) {
+            ASTNode *cur = st.top();
+            st.pop();
+            if ( cur->left ) {
+                // 若有左子樹，則將其類型設為 QUOTE_DATA
+                if ( !eval && cur->left->type == SYMBOL ) cur->left->type = "QUOTE_DATA";
+                st.push(cur->left);
+            }
+            if ( cur->right ) {
+                // 若有右子樹，則將其類型設為 QUOTE_DATA
+                if ( !eval && cur->right->type == SYMBOL ) cur->right->type = "QUOTE_DATA";
+                st.push(cur->right);
+            }
         }
     }
-
+    
+    try {
+        if ( eval ) {
+            eval = false; // 若為 eval 的 S-expression，則不再需要檢查
+            if ( (*parent)->type == SYMBOL || (*parent)->left->type == SYMBOL )
+                checkExpression(&(*parent)->left, parent); // 若為 eval 的 S-expression，則需檢查其內容
+            else if ( (*parent)->left->type == LEFT_PAREN )
+                checkExpression(&(*parent)->left->left, &(*parent)->left);
+        }
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+    
     return true;
     
 }
@@ -2936,6 +2960,47 @@ bool Symbol::isChangeToString(ASTNode *root, ASTNode **parent) {
         new_root->left = NULL; // 將其左子樹設為 NULL
         new_root->right = NULL; // 將其右子樹設為 NULL
         *parent = new_root; // 將其設為新的根節點
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+
+    return true;
+
+}
+
+bool Symbol::isEval(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 EVAL 並更新 AST */
+    if ( root->value != "eval" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 EVAL function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( arg != 1 ) throw std::runtime_error("ERROR (incorrect number of arguments) : eval\n");
+
+    try {
+        ASTNode *run_node = (*parent)->right->left, *temp = run_node; // 該位置應該為需運行的 S-expression
+        eval = true; // 設定 eval 為 true，表示需要運行 S-expression
+        copyAndLink(&temp); // 將該 S-expression 複製一份，報錯時使用
+        checkExpression(&run_node->left, &run_node); // 檢查 Expression 內的內容
+        if ( !run_node ) {
+            // 若參數不存在，則報錯
+            cout << "ERROR (unbound parameter) : ";
+            throw temp;
+        }
+        eval = false; // 設定 eval 為 false，表示不需要運行 S-expression
+        *parent = run_node; // 將其設為新的根節點
     }
     catch ( const std::runtime_error &msg ) {
         throw msg;
