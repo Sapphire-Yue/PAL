@@ -127,25 +127,27 @@ class Symbol {
         void writeFunction(ASTNode *root);
 };
 
+class Reader; // 前置宣告，因 Function 需要使用 Reader
+
 class Function {
     public:
         Function();
         ~Function();
-        ASTNode *getRoot() { return root; };
+        ASTNode **getRoot() { return &root; };
         bool getDot() { return dot; };
         int getQuote() { return quote; };
         int getRead() { return read; };
+        stack<ASTNode*> &getAST() { return ast; };
+        Atom &getAtom() { return atom; };
         void newAST();
         void checkTypeOfAtom(string &atom, string &type);
-        void storeTokenInAST(string &token, int &line, int &column);
-        void checkTokenToStore(string &token, int &line, int &column, char &sep);
+        void storeTokenInAST(string &token, int &line, int &column, Reader &reader, Symbol &symbol);
+        void checkTokenToStore(string &token, int &line, int &column, char &sep, Reader &reader, Symbol &symbol);
         void commonStore(string &token, string &type);
         void newExpression(string &token, int &line, int &column);
         void backExpression();
         void quoteExpression(string &token, int &line, int &column);
         bool checkExit();
-        void optimizeAST();
-        bool printAST();
     private:
         ASTNode *root;
         ASTNode *cur;
@@ -155,11 +157,22 @@ class Function {
         int quote;
         Atom atom;
         Error error;
-        Symbol symbol;
         string input;
-        stack<pair<ASTNode*, int>> st;
         int read;
         queue<ASTNode**> read_queue; // 用於處理讀取的 ASTNode 指標
+};
+
+class Separator; // 前置宣告，因 Reader 需要使用 Separator
+
+class Reader {
+    public:
+        Reader(Function &function);
+        ~Reader();
+        bool readNextLine(string &expr, int &line, int &nil, Separator &separator, Function &function, Symbol &symbol);
+        void saperateExprToToken(string &expr, int &line, int &nil, Separator &separator, Function &function, Symbol &symbol);
+    private:
+        int left_paren;
+        Function &function;
 };
 
 class Separator {
@@ -167,56 +180,52 @@ class Separator {
         Separator(Function &function);
         ~Separator();
         void leftParen(string &token, int &line, int &column);
-        void rightParen(string &token, int &nil, int &left_paren, int &line, int &column);
-        void singleQuote(string &token, int &line, int &column);
-        void doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep);
+        void rightParen(string &token, int &nil, int &left_paren, int &line, int &column, Reader &reader, Symbol &symbol);
+        void singleQuote(string &token, int &line, int &column, Reader &reader, Symbol &symbol);
+        void doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep, Reader &reader, Symbol &symbol);
     private:
         Function &function;
-
 };
 
-class Reader {
-    public:
-        Reader(Function &function);
-        ~Reader();
-        void read();
-        bool readNextLine(string &expr, int &line, int &nil);
-        void saperateExprToToken(string &expr, int &line, int &nil);
-    private:
-        int left_paren;
-        Separator separtor;
-        Function &function;
-};
+void interface(Reader &reader, Separator &separator, Function &function, Symbol &symbol);
+void optimizeAST(Reader &reader, Function &function, Symbol &symbol);
+bool printAST(Function &function, Symbol &symbol);
 
 int main() {
     //string num;   // 測資題號
     //getline(cin, num);
     Function function;
     Reader reader(function);
-    reader.read();
+    Separator separator(function); // 用於分割 S-expression 的 Separator
+
+    Function function2; // 用於優化 AST 的 Function
+    Reader reader2(function2);
+    Symbol symbol;
+
+    interface(reader, separator, function, symbol); // 讀取使用者輸入的 S-expression
     return 0;
 }
 
-Reader::Reader(Function &function) : function(function), separtor(function) {
+Reader::Reader(Function &function) : function(function) {
     cout << "Reader created" << endl;
+    left_paren = 0; // 預設左括弧為 0
 }
 
 Reader::~Reader() {
     cout << "Reader destroyed" << endl;
 }
 
-void Reader::read() {
+void interface(Reader &reader, Separator &separator, Function &function, Symbol &symbol) {
 
     cout << "Welcome to OurScheme!" << endl;
     cout << "\n> ";
     string expr;
-    left_paren = 0; // 預設左括弧為 0
     int line = 0, nil = 0;    // 紀錄行數
 
     while ( true ) {
         // 重複讀取下一個S-expression
         try {
-            if ( !readNextLine(expr, line, nil) ) break;   // 讀取到exit結束
+            if ( !reader.readNextLine(expr, line, nil, separator, function, symbol) ) break;   // 讀取到exit結束
         }
         catch ( const char *msg ) {
             cerr << msg;
@@ -228,7 +237,7 @@ void Reader::read() {
     cout.flush(); // 避免緩衝區輸出並未顯示
 }
 
-bool Reader::readNextLine(string &expr, int &line, int &nil) {
+bool Reader::readNextLine(string &expr, int &line, int &nil, Separator &separator, Function &function, Symbol &symbol) {
     /*  讀取下一行輸入的資料
         若遇到EOF則拋出例外 */
 
@@ -237,23 +246,9 @@ bool Reader::readNextLine(string &expr, int &line, int &nil) {
 
     cout << "You entered: " << expr << " " << endl;    // debug
     try {
-        saperateExprToToken(expr, line, nil);  // 將輸入的S-expression分割成Token
+        saperateExprToToken(expr, line, nil, separator, function, symbol);  // 將輸入的S-expression分割成Token
     }
     catch ( const std::runtime_error &msg ) {
-        if ( function.getRead() ) {
-            // 因錯誤而結束該S-expression，重新讀取下一行時需全部清空
-            line = 0;
-            left_paren = 0;
-
-            function.getRoot()->type = ERROR;
-            function.getRoot()->value = msg.what();
-            function.getRoot()->value.pop_back(); // 移除最後的換行符號
-            function.getRoot()->value = "\"" + function.getRoot()->value + "\"";
-            function.getRoot()->left = NULL;
-            function.getRoot()->right = NULL;
-            function.optimizeAST(); // 若讀取過程中發生錯誤，則輸出錯誤訊息
-            return true; // 讀取過程中發生錯誤，仍需繼續讀取下一行
-        }
         cerr << msg.what();
         cout << "\n> ";
         // 因錯誤而結束該S-expression，重新讀取下一行時需全部清空
@@ -275,7 +270,7 @@ bool Reader::readNextLine(string &expr, int &line, int &nil) {
 
 }
 
-void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
+void Reader::saperateExprToToken(string &expr, int &line, int &nil, Separator &separator, Function &function, Symbol &symbol) {
     /*  1: 將讀入的一行指令，以字元方式進行分析
         2: 並呼叫函數儲存至 AST
         3: 記錄行列數以因應錯誤 */
@@ -291,8 +286,8 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         if ( !str && c == '(' ) {
             ++left_paren;
             try {
-                function.checkTokenToStore(token, line, column, c);
-                separtor.leftParen(token, line, column);
+                function.checkTokenToStore(token, line, column, c, *this, symbol);
+                separator.leftParen(token, line, column);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -302,8 +297,8 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( !str && c == ')' ) {
             --left_paren;
             try {
-                function.checkTokenToStore(token, line, column, c);
-                separtor.rightParen(token, nil, left_paren, line, column);
+                function.checkTokenToStore(token, line, column, c, *this, symbol);
+                separator.rightParen(token, nil, left_paren, line, column, *this, symbol);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -315,8 +310,8 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( !str && c == '\'' ) {
             // 遇到引號，將 quote 存入 AST
             try {
-                function.checkTokenToStore(token, line, column, c);
-                separtor.singleQuote(token, line, column);
+                function.checkTokenToStore(token, line, column, c, *this, symbol);
+                separator.singleQuote(token, line, column, *this, symbol);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -325,7 +320,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( !str && c == ' ' ) {
             // 遇到空白，將 token 存入 AST
             try {
-                function.checkTokenToStore(token, line, column, c);
+                function.checkTokenToStore(token, line, column, c, *this, symbol);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -339,7 +334,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( c == '\"' ) {
             // 遇到雙引號，將字串存入AST
             try {
-                separtor.doubleQuote(token, line, column, str, backslash, c);
+                separator.doubleQuote(token, line, column, str, backslash, c, *this, symbol);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -363,7 +358,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         // 若該行最後一個 Token 未存入 AST ，則存入
         try {
             ++column;
-            function.storeTokenInAST(token, line, column);
+            function.storeTokenInAST(token, line, column, *this, symbol);
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -372,7 +367,7 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
     }
     
     if ( left_paren || function.getQuote() ) return;    // 該 S-expression 未結束，繼續讀取下一行
-    else if ( function.printAST() || lineAreNotEmpty ) line = 0;    // 當 AST 樹輸出結束，或該行早已輸出結果，則須更新行數
+    else if ( lineAreNotEmpty ) line = 0;    // 當 AST 樹輸出結束，或該行早已輸出結果，則須更新行數
     
 }
 
@@ -380,7 +375,6 @@ Function::Function() {
     // cout << "Function created" << endl;  // debug
     atom = Atom();
     error = Error();
-    symbol = Symbol();
     root = new ASTNode();   // 建立AST
     root->type = BEGIN;
     root->value = "";
@@ -405,7 +399,6 @@ void Function::newAST() {
     cur = root;
     dot = false;
     quote = false;
-    symbol = Symbol();
 }
 
 bool Function::checkExit() {
@@ -415,7 +408,7 @@ bool Function::checkExit() {
     return false;
 }
 
-void Function::storeTokenInAST(string &token, int &line, int &column) {
+void Function::storeTokenInAST(string &token, int &line, int &column, Reader &reader, Symbol &symbol) {
     /*  將 Token 存入 AST
         並更新目前節點位置 */
     string type;
@@ -465,7 +458,7 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         cur->left = NULL;
         cur->right = NULL;
         try {
-            optimizeAST(); // 指令建構完成，則輸出 AST
+            optimizeAST(reader, *this, symbol); // 指令建構完成，則輸出 AST
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -494,7 +487,7 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         if ( ast.empty() ) {
             // 若無外層 S-expression ，表示指令建構完成，則輸出 AST
             try {
-                optimizeAST(); // 指令建構完成，則輸出 AST
+                optimizeAST(reader, *this, symbol); // 指令建構完成，則輸出 AST
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -503,6 +496,7 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
                 if ( msg == "Exit" ) return;
             }
             line = 0, column = 0;
+            return;
         }
     }
 }
@@ -540,12 +534,12 @@ void Function::commonStore(string &token, string &type) {
     cur->type = TEMP;
 }
 
-void Function::checkTokenToStore(string &token, int &line, int &column, char &sep) {
+void Function::checkTokenToStore(string &token, int &line, int &column, char &sep, Reader &reader, Symbol &symbol) {
     /* 在 seperater 使用前，檢查 Token 是否蘊含先前讀入的資料
         若有，則將該資料存入 AST，無論如何，皆會將 Token 改為使其分割的 Seperator */
     if ( !token.empty() ) {
         try {
-            storeTokenInAST(token, line, column);
+            storeTokenInAST(token, line, column, reader, symbol);
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -614,14 +608,15 @@ void Function::quoteExpression(string &token, int &line, int &column) {
     ++quote;    // 計算 QUOTE 的層數
 }
 
-bool Function::printAST() {
-    /* 印出AST */
+bool printAST(Function &function, Symbol &symbol) {
+    /* 印出 AST */
+    ASTNode *root = *function.getRoot();
     if ( root->type == BEGIN ) return false;    // 若無資料，則不需印出
     else if ( symbol.getDefine() ) {
         // 若有新的定義，則不須印出
         symbol.getDefine() = false;
         cout << "\n> ";
-        newAST();
+        function.newAST();
         return true;
     }
 
@@ -663,7 +658,7 @@ bool Function::printAST() {
                 cout << ")" << endl;
         }
         else if ( !cur->left && !cur->right ) {
-            if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
+            if ( function.getAtom().isFLOAT(cur->value) ) function.getAtom().isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
             cout << cur->value << endl;
 
             if ( direction == "right" ) {
@@ -675,7 +670,7 @@ bool Function::printAST() {
     }
 
     cout << "\n> ";
-    newAST();
+    function.newAST();
     return true;
 }
 
@@ -846,7 +841,7 @@ void Separator::leftParen(string &token, int &line, int &column) {
     }
 }
 
-void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, int &column) {
+void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, int &column, Reader &reader, Symbol &symbol) {
     /*  遇見右括弧，可能為
         1: 結束該S-expression -> 若剛好使用完左括弧，及輸出結果，反之則回到外層 S-expression
         2: nil
@@ -859,7 +854,7 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
     else if ( !nil ) {
         // 當括弧內沒有資料時，則該位置為nil
         try {
-            function.storeTokenInAST(token, line, column);
+            function.storeTokenInAST(token, line, column, reader, symbol);
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -874,7 +869,7 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
         // 整筆 S-expression 結束
         if ( function.checkExit() ) throw "Exit"; // 若為exit，則結束
         try {
-            function.optimizeAST(); // 整理AST
+            optimizeAST(reader, function, symbol); // 整理AST
         }
         catch ( const std::runtime_error &msg ) {
             throw msg;
@@ -884,20 +879,19 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
             if ( msg == "Exit" ) throw msg;
             function.newAST();
         }
-        //function.printAST();
         line = 0, column = 0; // 重新另一個S-expression
     }
     token.clear();
 
 }
 
-void Separator::singleQuote(string &token, int &line, int &column) {
+void Separator::singleQuote(string &token, int &line, int &column, Reader &reader, Symbol &symbol) {
     /*  遇到單引號，即內部為另一筆 S-expression 
         與左括弧相似，需建造樹的新母節點 */
 
     try {
         function.quoteExpression(token, line, column);
-        function.storeTokenInAST(token, line, column);
+        function.storeTokenInAST(token, line, column, reader, symbol);
         token.clear();
     }
     catch ( const std::runtime_error &msg ) {
@@ -905,16 +899,16 @@ void Separator::singleQuote(string &token, int &line, int &column) {
     }
 }
 
-void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep) {
+void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep, Reader &reader, Symbol &symbol) {
     /*  遇到雙引號，將字串存入AST
         若遇到反斜線則將雙引號公用消除，反之則該字串結束 */
     try {
-        if ( !str ) function.checkTokenToStore(token, line, column, sep);   // 若為雙引號的開頭，則將前面的 token 存入 AST
+        if ( !str ) function.checkTokenToStore(token, line, column, sep, reader, symbol);   // 若為雙引號的開頭，則將前面的 token 存入 AST
 
         if ( str && !backslash ) {
             // 若遇到反斜線則將雙引號公用消除，反之則該字串結束
             token += sep;
-            function.storeTokenInAST(token, line, column);
+            function.storeTokenInAST(token, line, column, reader, symbol);
             token.clear();
             str = false;
         }
@@ -930,27 +924,16 @@ void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bo
 
 }
 
-void Function::optimizeAST() {
-    // 整理AST
-    while ( !ast.empty() ) backExpression(); // 將所有 S-expression 跳出至最外層
+void optimizeAST(Reader &reader, Function &function, Symbol &symbol) {
+    // 整理 AST
+    while ( !function.getAST().empty() ) function.backExpression(); // 將所有 S-expression 跳出至最外層
 
+    ASTNode *root = *function.getRoot(), *root_temp = new ASTNode();
     stack<pair<ASTNode**, ASTNode**>> st;
     stack<ASTNode*> error_node;
     st.push({&root, NULL});
-    ASTNode *root_temp = new ASTNode();
+    symbol = Symbol(); // 清空 Symbol 的定義
     symbol.copyTree(root_temp, root); // 將該自定義結構複製，報錯時使用
-
-    if ( read ) {
-        // 若為 read 的 S-expression，則需將其結果存入 read_queue
-        symbol.getReadQueue().push(root); // 將該 AST 給 read 使用
-        --read;
-        if ( read ) {
-            cout << "\n> ";
-            newAST();
-            return;
-        }
-        else root = read_tree; // 若 read 結束，則將其結果給當前 AST 使用
-    }
 
     if ( root->type == SYMBOL ) {
         // 若根節點為 SYMBOL ，則檢查是否存在
@@ -965,7 +948,7 @@ void Function::optimizeAST() {
             cout << msg.what();
             cout << "\n> ";
             // 因錯誤而結束該S-expression，重新讀取下一筆 S-expression
-            newAST();
+            function.newAST();
             return;
         }
         catch ( const char *msg ) {
@@ -973,17 +956,19 @@ void Function::optimizeAST() {
         }
         catch ( ASTNode *temp ) {
             root = temp;
-            printAST();
+            *function.getRoot() = root; // 更新 AST 的根節點
+            printAST(function, symbol);
             return;
         }
-        printAST(); 
+        *function.getRoot() = root; // 更新 AST 的根節點
+        printAST(function, symbol);
         return;
     }
 
     if ( !symbol.isAtom(root) && !symbol.isList(root) ) {
         // 若該 AST 不為 List 結構，則報錯
         cout << "ERROR (non-list) : ";
-        printAST();
+        printAST(function, symbol);
         return;
     }
     while ( !st.empty() ) {
@@ -1021,24 +1006,17 @@ void Function::optimizeAST() {
                 cout << msg.what();
                 cout << "\n> ";
                 // 因錯誤而結束該S-expression，重新讀取下一筆 S-expression
-                newAST();
+                function.newAST();
                 return;
             }
             catch ( const char *msg ) {
-                if ( symbol.getRead() ) {
-                    // 若為 read 的 S-expression，則不需報錯
-                    read_tree = new ASTNode(); // 將該 AST 給 read 使用
-                    symbol.copyTree(read_tree, root_temp); // 將該自定義結構複製
-                    read = symbol.getRead(); // 設定 read 的數量
-                    newAST();
-                    return;
-                }
                 throw msg;
             }
             catch ( ASTNode *temp ) {
                 root = temp;
                 symbol.isLambdaProcedure(root, NULL); // 檢查是否為 lambda 式
-                printAST();
+                *function.getRoot() = root; // 更新 AST 的根節點
+                printAST(function, symbol);
                 return;
             }
         }
@@ -1048,7 +1026,9 @@ void Function::optimizeAST() {
         root = root_temp; // 若無結果，則回傳原本的 AST
     }
     else symbol.isLambdaProcedure(root, NULL); // 檢查是否為 lambda 式
-    printAST(); 
+
+    *function.getRoot() = root; // 更新 AST 的根節點
+    printAST(function, symbol);
 }
 
 Error::Error() {
