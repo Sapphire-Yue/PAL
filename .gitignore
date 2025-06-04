@@ -16,3 +16,6 @@ test3.exe
 OurSchemeProj4.exe
 test4.cpp
 test4.exe
+test3-2.cpp
+.gitignore
+test3-2.exe
