@@ -20,3 +20,7 @@ test3-2.cpp
 .gitignore
 test3-2.exe
 Project1.cpp
+OurSchemeProj1-debug.cpp
+OurSchemeProj2-debug.cpp
+OurSchemeProj3-debug.cpp
+OurSchemeProj4-debug.cpp

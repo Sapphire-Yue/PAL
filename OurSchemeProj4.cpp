@@ -199,8 +199,8 @@ void optimizeAST(Reader &reader, Separator &separator, Function &function, Symbo
 bool printAST(Function &function, Symbol &symbol);
 
 int main() {
-    //string num;   // 測資題號
-    //getline(cin, num);
+    string num;   // 測資題號
+    getline(cin, num);
     Function function;
     Reader reader;
     Separator separator;
@@ -213,7 +213,7 @@ int main() {
 }
 
 Reader::Reader() {
-    cout << "Reader created" << endl;
+    // cout << "Reader created" << endl;
     cur = 0; // 預設目前字元位置為 0
     column = 0; // 預設目前列位置為 0
     left_paren = 0; // 預設左括弧為 0
@@ -221,7 +221,7 @@ Reader::Reader() {
 }
 
 Reader::~Reader() {
-    cout << "Reader destroyed" << endl;
+    // cout << "Reader destroyed" << endl;
 }
 
 void interface(Reader &reader, Separator &separator, Function &function, Symbol &symbol, Function &function_read) {
@@ -474,8 +474,8 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         並更新目前節點位置 */
     string type;
     checkTypeOfAtom(token, type);   // 確認 Token 型態並更新其內容
-    cout << "token: " << token << " " << type << " " << column << endl; // debug
-    cout << "cur: " << cur->value << " " << cur->type << endl; // debug
+    // cout << "token: " << token << " " << type << " " << column << endl; // debug
+    // cout << "cur: " << cur->value << " " << cur->type << endl; // debug
 
     string error_str;
     if ( error.unexpectedTokenOfRightParen(cur, token, line, column, error_str, false) ) throw std::runtime_error(error_str);   // 若前方並未存在 S-expression，則拋出錯誤

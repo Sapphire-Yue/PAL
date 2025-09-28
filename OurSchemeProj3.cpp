@@ -18,14 +18,15 @@ using namespace std;
 #define QUOTE "QUOTE"
 #define SYMBOL "SYMBOL"
 #define SYSTEM "SYSTEM"
+#define ERROR "ERROR"
 
 #define TEMP "TEMP"
 #define BEGIN "BEGIN"
 #define END "END"
 #define LINK "LINK"
 
-unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin", "clean-environment", "exit", "let", "lambda"}, 
-                    primitive_predicate{"atom?", "pair?", "list?", "null?", "integer?", "real?", "number?", "string?", "boolean?", "symbol?"},
+unordered_set<string> symbol_set{"cons", "quote", "list", "define", "car", "cdr", "eqv?", "equal?", "if", "cond", "begin", "clean-environment", "exit", "let", "lambda", "read", "write", "display-string", "newline", "symbol->string", "number->string", "eval", "set!"}, 
+                    primitive_predicate{"atom?", "pair?", "list?", "null?", "integer?", "real?", "number?", "string?", "boolean?", "symbol?", "error-object?"},
                     basic_arithmetic{"+" , "-" , "*" , "/", "not", "and", "or", ">", ">=", "<", "<=", "=", "string-append", "string>?", "string<?", "string=?"};
 
 struct ASTNode {
@@ -59,7 +60,6 @@ class Error {
         // bool noClosingQuote(int &line, int &column);
         // bool endOfFile();
         void checkSymbol(ASTNode *cur, bool non_function, stack<pair<unordered_map<string, ASTNode*>, bool>> local_map);
-        
 };
 
 class Symbol {
@@ -67,10 +67,12 @@ class Symbol {
         Symbol();
         ~Symbol();
         bool &getDefine() { return define; };
+        int &getRead() { return read; };
+        queue<ASTNode*> &getReadQueue() { return read_queue; };
         void symbolCheck(ASTNode **root, ASTNode **parent, int deep);
         int countFunctionArg(ASTNode *root);
         bool isCONS(ASTNode *root, ASTNode *parent);
-        bool isQUOTE(ASTNode *root, ASTNode *parent);
+        bool isQUOTE(ASTNode *root, ASTNode **parent);
         bool isList(ASTNode *root, ASTNode *parent);
         bool isUserDefine(ASTNode *root, ASTNode *parent, int deep);
         void userDefined(ASTNode **root, ASTNode **parent);
@@ -87,6 +89,7 @@ class Symbol {
         bool isString(ASTNode *root);
         bool isBoolean(ASTNode *root);
         bool isSymbol(ASTNode *root);
+        bool isErrorObject(ASTNode *root);
         bool isArithmetic(ASTNode *root, ASTNode **parent);
         bool isEqual(ASTNode *root, ASTNode *parent);
         bool isIf(ASTNode *root, ASTNode **parent);
@@ -98,11 +101,18 @@ class Symbol {
         bool isLambda(ASTNode *root, ASTNode **parent);
         bool isLambdaArg(ASTNode *root, ASTNode **parent);
         void isLambdaProcedure(ASTNode *root, ASTNode **parent);
+        bool isRead(ASTNode *root, ASTNode **parent);
+        bool isWrite(ASTNode *root, ASTNode **parent);
+        bool isChangeToString(ASTNode *root, ASTNode **parent);
+        bool isEval(ASTNode *root, ASTNode **parent);
+        bool isSet(ASTNode *root, ASTNode **parent);
     private:
         Atom atom;
         Error error;
         stack<pair<unordered_map<string, ASTNode*>, bool>> local_map; // 區域變數庫
-        bool define;
+        bool define, eval;
+        int read;
+        queue<ASTNode*> read_queue; // 用於處理讀取的 ASTNode 指標
         unordered_map<string, ASTNode*> lambda_tree;
         void checkExpression(ASTNode **root, ASTNode **parent);
         void copyAndLink(ASTNode **root);
@@ -114,15 +124,22 @@ class Symbol {
         void checkLambda(ASTNode *root);
         ASTNode* useLambda(ASTNode *root, string &key);
         void defineFunction(string &key, ASTNode *parent);
+        void writeFunction(ASTNode *root);
 };
+
+class Reader; // 前置宣告，因 Function 需要使用 Reader
+class Separator; // 前置宣告，因 Reader 需要使用 Separator
 
 class Function {
     public:
         Function();
         ~Function();
-        ASTNode *getRoot() { return root; };
+        ASTNode **getRoot() { return &root; };
         bool getDot() { return dot; };
         int getQuote() { return quote; };
+        int getRead() { return read; };
+        stack<ASTNode*> &getAST() { return ast; };
+        Atom &getAtom() { return atom; };
         void newAST();
         void checkTypeOfAtom(string &atom, string &type);
         void storeTokenInAST(string &token, int &line, int &column);
@@ -132,19 +149,30 @@ class Function {
         void backExpression();
         void quoteExpression(string &token, int &line, int &column);
         bool checkExit();
-        void optimizeAST();
-        bool printAST();
     private:
         ASTNode *root;
         ASTNode *cur;
         stack<ASTNode*> ast;
+        ASTNode *read_tree; // 用於讀取的 ASTNode 樹
         bool dot;
         int quote;
         Atom atom;
         Error error;
-        Symbol symbol;
         string input;
-        stack<pair<ASTNode*, int>> st;
+        int read;
+        queue<ASTNode**> read_queue; // 用於處理讀取的 ASTNode 指標
+};
+
+class Reader {
+    public:
+        Reader(Function &function);
+        ~Reader();
+        bool readNextLine(int &line, int &nil, Separator &separator, Function &function, Symbol &symbol);
+        void saperateExprToToken(int &line, int &nil, Separator &separator, Function &function, Symbol &symbol);
+    private:
+        int cur, column, left_paren;
+        string expr;
+        Function &function;
 };
 
 class Separator {
@@ -154,58 +182,68 @@ class Separator {
         void leftParen(string &token, int &line, int &column);
         void rightParen(string &token, int &nil, int &left_paren, int &line, int &column);
         void singleQuote(string &token, int &line, int &column);
-        void doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep);
+        void doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep, int &cur);
     private:
         Function &function;
-
 };
 
-class Reader {
-    public:
-        Reader(Function &function);
-        ~Reader();
-        void read();
-        bool readNextLine(string &expr, int &line, int &nil);
-        void saperateExprToToken(string &expr, int &line, int &nil);
-    private:
-        int left_paren;
-        Separator separtor;
-        Function &function;
-};
+void interface(Reader &reader, Separator &separator, Function &function, Symbol &symbol);
+void optimizeAST(Reader &reader, Separator &separator, Function &function, Symbol &symbol);
+bool printAST(Function &function, Symbol &symbol);
 
 int main() {
-    //string num;   // 測資題號
-    //getline(cin, num);
+    string num;   // 測資題號
+    getline(cin, num);
     Function function;
     Reader reader(function);
-    reader.read();
+    Separator separator(function); // 用於分割 S-expression 的 Separator
+
+    Function function2; // 用於優化 AST 的 Function
+    Symbol symbol;
+
+    interface(reader, separator, function, symbol); // 讀取使用者輸入的 S-expression
     return 0;
 }
 
-Reader::Reader(Function &function) : function(function), separtor(function) {
-    cout << "Reader created" << endl;
+Reader::Reader(Function &function) : function(function) {
+    // cout << "Reader created" << endl;
+    cur = 0; // 預設目前字元位置為 0
+    column = 0; // 預設目前列位置為 0
+    left_paren = 0; // 預設左括弧為 0
+    expr.clear(); // 清空表達式
 }
 
 Reader::~Reader() {
-    cout << "Reader destroyed" << endl;
+    // cout << "Reader destroyed" << endl;
 }
 
-void Reader::read() {
+void interface(Reader &reader, Separator &separator, Function &function, Symbol &symbol) {
 
     cout << "Welcome to OurScheme!" << endl;
     cout << "\n> ";
-    string expr;
-    left_paren = 0; // 預設左括弧為 0
     int line = 0, nil = 0;    // 紀錄行數
 
     while ( true ) {
         // 重複讀取下一個S-expression
         try {
-            if ( !readNextLine(expr, line, nil) ) break;   // 讀取到exit結束
+            if ( !reader.readNextLine(line, nil, separator, function, symbol) ) break;   // 讀取到exit結束
         }
         catch ( const char *msg ) {
-            cerr << msg;
-            break;  // 讀取到EOF結束
+            if ( msg == "Build Done" ) {
+                try {
+                    optimizeAST(reader, separator, function, symbol); // 若為 Build Done，則優化 AST
+                }
+                catch ( const char *msg ) {
+                    if ( msg == "Exit" ) 
+                        break;
+                }
+                function.newAST(); // 若為其他錯誤，則建立新的 AST
+                continue;
+            }
+            else {
+                cout << msg; // 輸出錯誤訊息
+                break;
+            }
         }
     }
 
@@ -213,59 +251,71 @@ void Reader::read() {
     cout.flush(); // 避免緩衝區輸出並未顯示
 }
 
-bool Reader::readNextLine(string &expr, int &line, int &nil) {
+bool Reader::readNextLine(int &line, int &nil, Separator &separator, Function &function, Symbol &symbol) {
     /*  讀取下一行輸入的資料
         若遇到EOF則拋出例外 */
 
-    if ( !getline(cin, expr) ) throw "ERROR (no more input) : END-OF-FILE encountered"; // 讀到EOF
-    ++line;    // 紀錄行數
+    if ( cur + 1 >= expr.size() ) {
+        // 若還有資料未讀取完，則不需重新讀取
+        if ( !getline(cin, expr) ) throw "ERROR (no more input) : END-OF-FILE encountered"; // 讀到EOF
+        cur = 0;    // 重置目前字元位置
+        ++line;    // 紀錄行數
+        column = 0; // 重置目前列位置
 
-    cout << "You entered: " << expr << " " << endl;    // debug
+        // cout << "You entered: " << expr << " " << endl;    // debug
+    }
+    else ++cur; // 若還有資料未讀取完，則向後移動一個字元
+    
     try {
-        saperateExprToToken(expr, line, nil);  // 將輸入的S-expression分割成Token
+        saperateExprToToken(line, nil, separator, function, symbol);  // 將輸入的S-expression分割成Token
     }
     catch ( const std::runtime_error &msg ) {
-        cerr << msg.what();
+        cout << msg.what();
         cout << "\n> ";
         // 因錯誤而結束該S-expression，重新讀取下一行時需全部清空
         line = 0;
         left_paren = 0;
         function.newAST();
+        expr.clear();
         return true;
     }
     catch ( const char *msg ) {
-        if ( msg == "Exit" ) return false;
-
-        // 因錯誤而結束該S-expression，重新讀取下一行時需全部清空
-        line = 0;
-        left_paren = 0;
-        function.newAST();
+        if ( msg == "Exit" ) 
+            return false; // 若為 Exit，則結束程式
+        left_paren = 0; // 因錯誤而結束該 S-expression，重新讀取下一行時需全部清空
+        throw msg;
     }
 
     return true;
 
 }
 
-void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
+void Reader::saperateExprToToken(int &line, int &nil, Separator &separator, Function &function, Symbol &symbol) {
     /*  1: 將讀入的一行指令，以字元方式進行分析
         2: 並呼叫函數儲存至 AST
         3: 記錄行列數以因應錯誤 */
-    int column = 0; // 紀錄目前字元列位置
+
     bool str = false, backslash = false;
-    bool lineAreNotEmpty = false;   // 判斷該行行數是否需要被算入下一筆 Token
+    bool lineAreNotEmpty = cur != 0;   // 判斷該行行數是否需要被算入下一筆 Token
     string token;
 
-    for ( auto &c : expr ) {
+    for ( ; cur < expr.size(); cur++ ) {
+        char c = expr[cur];
         ++column;
         if ( !line ) ++line;    // 避免該行的 S-expression 已結束，但該行後續還有資料
         if ( c != ' ' && c != ';' ) lineAreNotEmpty = true;
         if ( !str && c == '(' ) {
             ++left_paren;
             try {
+                --cur; // 因為左括弧會被當作分隔符號，故 cur 需減一
                 function.checkTokenToStore(token, line, column, c);
-                separtor.leftParen(token, line, column);
+                ++cur; // 於當前情況，左括弧後的字元仍需被讀取，故 cur 需加一
+                separator.leftParen(token, line, column);
             }
             catch ( const std::runtime_error &msg ) {
+                throw msg;
+            }
+            catch ( const char *msg ) {
                 throw msg;
             }
             nil = 0;
@@ -273,8 +323,10 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( !str && c == ')' ) {
             --left_paren;
             try {
+                --cur; // 因為右括弧會被當作分隔符號，故 cur 需減一
                 function.checkTokenToStore(token, line, column, c);
-                separtor.rightParen(token, nil, left_paren, line, column);
+                ++cur; // 於當前情況，右括弧後的字元仍需被讀取，故 cur 需加一
+                separator.rightParen(token, nil, left_paren, line, column);
             }
             catch ( const std::runtime_error &msg ) {
                 throw msg;
@@ -286,10 +338,15 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( !str && c == '\'' ) {
             // 遇到引號，將 quote 存入 AST
             try {
+                --cur; // 因為單引號會被當作分隔符號，故 cur 需減一
                 function.checkTokenToStore(token, line, column, c);
-                separtor.singleQuote(token, line, column);
+                ++cur; // 於當前情況，單引號後的字元仍需被讀取，故 cur 需加一
+                separator.singleQuote(token, line, column);
             }
             catch ( const std::runtime_error &msg ) {
+                throw msg;
+            }
+            catch ( const char *msg ) {
                 throw msg;
             }
         }
@@ -301,6 +358,10 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
             catch ( const std::runtime_error &msg ) {
                 throw msg;
             }
+            catch ( const char *msg ) {
+                ++column; // 因為空白會被當作分隔符號，故 column 需加一
+                throw msg;
+            }
             token.clear();
         }
         else if ( !str && c == ';') {
@@ -310,9 +371,12 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         else if ( c == '\"' ) {
             // 遇到雙引號，將字串存入AST
             try {
-                separtor.doubleQuote(token, line, column, str, backslash, c);
+                separator.doubleQuote(token, line, column, str, backslash, c, cur);
             }
             catch ( const std::runtime_error &msg ) {
+                throw msg;
+            }
+            catch ( const char *msg ) {
                 throw msg;
             }
             ++nil; // 該括弧並不為空
@@ -324,6 +388,8 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
             ++nil;
         }
     }
+
+    cur = expr.size();     // 當該 S-expression 為註解，則讀取下一行
 
     if ( str ) {
         // 若字串在該行未結束，則拋出錯誤
@@ -339,11 +405,14 @@ void Reader::saperateExprToToken(string &expr, int &line, int &nil) {
         catch ( const std::runtime_error &msg ) {
             throw msg;
         }
+        catch ( const char *msg ) {
+            throw msg;
+        }
         token.clear();
     }
     
     if ( left_paren || function.getQuote() ) return;    // 該 S-expression 未結束，繼續讀取下一行
-    else if ( function.printAST() || lineAreNotEmpty ) line = 0;    // 當 AST 樹輸出結束，或該行早已輸出結果，則須更新行數
+    else if ( lineAreNotEmpty ) line = 0;    // 當 AST 樹輸出結束，或該行早已輸出結果，則須更新行數
     
 }
 
@@ -351,13 +420,14 @@ Function::Function() {
     // cout << "Function created" << endl;  // debug
     atom = Atom();
     error = Error();
-    symbol = Symbol();
     root = new ASTNode();   // 建立AST
     root->type = BEGIN;
     root->value = "";
     cur = root;
     dot = false;
     quote = false;
+    read = 0;
+    read_tree = NULL;
 }
 
 Function::~Function() {
@@ -374,7 +444,7 @@ void Function::newAST() {
     cur = root;
     dot = false;
     quote = false;
-    symbol = Symbol();
+    ast = stack<ASTNode*>();
 }
 
 bool Function::checkExit() {
@@ -389,8 +459,8 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         並更新目前節點位置 */
     string type;
     checkTypeOfAtom(token, type);   // 確認 Token 型態並更新其內容
-    cout << "token: " << token << " " << type << " " << column << endl; // debug
-    cout << "cur: " << cur->value << " " << cur->type << endl; // debug
+    // cout << "token: " << token << " " << type << " " << column << endl; // debug
+    // cout << "cur: " << cur->value << " " << cur->type << endl; // debug
 
     string error_str;
     if ( error.unexpectedTokenOfRightParen(cur, token, line, column, error_str, false) ) throw std::runtime_error(error_str);   // 若前方並未存在 S-expression，則拋出錯誤
@@ -433,17 +503,8 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         cur->type = type;
         cur->left = NULL;
         cur->right = NULL;
-        try {
-            optimizeAST(); // 指令建構完成，則輸出 AST
-        }
-        catch ( const std::runtime_error &msg ) {
-            throw msg;
-        }
-        catch ( const char *msg ) {
-            if ( msg == "Exit" ) return;
-        }
         line = 0, column = 0;
-        return;
+        throw "Build Done"; // 若該 S-expression 已結束，則回到主程式
     }
     else if ( dot ) {
         // 若前一個 Token 為 DOT ，則將該 Token 存入右節點
@@ -462,16 +523,8 @@ void Function::storeTokenInAST(string &token, int &line, int &column) {
         backExpression();
         if ( ast.empty() ) {
             // 若無外層 S-expression ，表示指令建構完成，則輸出 AST
-            try {
-                optimizeAST(); // 指令建構完成，則輸出 AST
-            }
-            catch ( const std::runtime_error &msg ) {
-                throw msg;
-            }
-            catch ( const char *msg ) {
-                if ( msg == "Exit" ) return;
-            }
             line = 0, column = 0;
+            throw "Build Done"; // 若該 S-expression 已結束，則回到主程式
         }
     }
 }
@@ -519,8 +572,9 @@ void Function::checkTokenToStore(string &token, int &line, int &column, char &se
         catch ( const std::runtime_error &msg ) {
             throw msg;
         }
-        if ( line == 0 ) line = 1;  // 若儲存完即輸出，若該行讀入還有資料，則須設定行數為 1
-        if ( column == 0 ) column = 1;  // 若儲存完即輸出，若該行讀入還有資料，則須設定列數為 1
+        catch ( const char *msg ) {
+            throw msg;
+        }
     }
     token = sep;
 
@@ -583,14 +637,15 @@ void Function::quoteExpression(string &token, int &line, int &column) {
     ++quote;    // 計算 QUOTE 的層數
 }
 
-bool Function::printAST() {
-    /* 印出AST */
+bool printAST(Function &function, Symbol &symbol) {
+    /* 印出 AST */
+    ASTNode *root = *function.getRoot();
     if ( root->type == BEGIN ) return false;    // 若無資料，則不需印出
     else if ( symbol.getDefine() ) {
         // 若有新的定義，則不須印出
         symbol.getDefine() = false;
         cout << "\n> ";
-        newAST();
+        function.newAST();
         return true;
     }
 
@@ -626,12 +681,15 @@ bool Function::printAST() {
         }
         else if ( (cur->type == END || cur->value == "nil") && direction != "left" ) {
             // 若該節點為右節點且為 END 或 nil，則印出右括弧
-            if ( direction != "right" ) cout << "nil" << endl;
-            else cout << ")" << endl;
+            if ( direction != "right" )
+                cout << "nil" << endl;
+            else 
+                cout << ")" << endl;
         }
         else if ( !cur->left && !cur->right ) {
-            if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
+            if ( function.getAtom().isFLOAT(cur->value) ) function.getAtom().isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
             cout << cur->value << endl;
+
             if ( direction == "right" ) {
                 --left_paren;
                 for ( int i = 0; i < left_paren; ++i ) cout << "  ";
@@ -639,8 +697,9 @@ bool Function::printAST() {
             }    
         }
     }
+
     cout << "\n> ";
-    newAST();
+    function.newAST();
     return true;
 }
 
@@ -829,6 +888,9 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
         catch ( const std::runtime_error &msg ) {
             throw msg;
         }
+        catch ( const char *msg ) {
+            throw msg;
+        }
         ++nil;  // 外層括弧並不為空
     }
     
@@ -838,19 +900,9 @@ void Separator::rightParen(string &token, int &nil, int &left_paren, int &line, 
     if ( !left_paren ) {
         // 整筆 S-expression 結束
         if ( function.checkExit() ) throw "Exit"; // 若為exit，則結束
-        try {
-            function.optimizeAST(); // 整理AST
-        }
-        catch ( const std::runtime_error &msg ) {
-            throw msg;
-        }
-        catch ( const char *msg ) {
-            // clean-environment 不做其他回傳
-            if ( msg == "Exit" ) throw msg;
-            function.newAST();
-        }
-        //function.printAST();
+        function.getAST() = stack<ASTNode*>(); // 清空 AST 的 S-expression
         line = 0, column = 0; // 重新另一個S-expression
+        throw "Build Done"; // 若該 S-expression 已結束，則回到主程式
     }
     token.clear();
 
@@ -868,20 +920,24 @@ void Separator::singleQuote(string &token, int &line, int &column) {
     catch ( const std::runtime_error &msg ) {
         throw msg;
     }
+    catch ( const char *msg ) {
+        throw msg;
+    }
 }
 
-void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep) {
+void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bool &backslash, char &sep, int &cur) {
     /*  遇到雙引號，將字串存入AST
         若遇到反斜線則將雙引號公用消除，反之則該字串結束 */
     try {
+        --cur; // 因為雙引號引號會被當作分隔符號，故 cur 需減一
         if ( !str ) function.checkTokenToStore(token, line, column, sep);   // 若為雙引號的開頭，則將前面的 token 存入 AST
-
+        ++cur; // 於當前情況，雙引號後的字元仍需被讀取，故 cur 需加一
         if ( str && !backslash ) {
             // 若遇到反斜線則將雙引號公用消除，反之則該字串結束
             token += sep;
+            str = false;
             function.storeTokenInAST(token, line, column);
             token.clear();
-            str = false;
         }
         else {
             if ( token.size() != 1 ) token += sep; // 避免雙引號重複添加
@@ -892,17 +948,21 @@ void Separator::doubleQuote(string &token, int &line, int &column, bool &str, bo
     catch ( const std::runtime_error &msg ) {
         throw msg;
     }
+    catch ( const char *msg ) {
+        throw msg;
+    }
 
 }
 
-void Function::optimizeAST() {
-    // 整理AST
-    while ( !ast.empty() ) backExpression(); // 將所有 S-expression 跳出至最外層
+void optimizeAST(Reader &reader, Separator &separator, Function &function, Symbol &symbol) {
+    // 整理 AST
+    while ( !function.getAST().empty() ) function.backExpression(); // 將所有 S-expression 跳出至最外層
 
+    ASTNode *root = *function.getRoot(), *root_temp = new ASTNode();
     stack<pair<ASTNode**, ASTNode**>> st;
     stack<ASTNode*> error_node;
     st.push({&root, NULL});
-    ASTNode *root_temp = new ASTNode();
+    symbol = Symbol(); // 清空 Symbol 的定義
     symbol.copyTree(root_temp, root); // 將該自定義結構複製，報錯時使用
 
     if ( root->type == SYMBOL ) {
@@ -918,7 +978,7 @@ void Function::optimizeAST() {
             cout << msg.what();
             cout << "\n> ";
             // 因錯誤而結束該S-expression，重新讀取下一筆 S-expression
-            newAST();
+            function.newAST();
             return;
         }
         catch ( const char *msg ) {
@@ -926,17 +986,19 @@ void Function::optimizeAST() {
         }
         catch ( ASTNode *temp ) {
             root = temp;
-            printAST();
+            *function.getRoot() = root; // 更新 AST 的根節點
+            printAST(function, symbol);
             return;
         }
-        printAST(); 
+        *function.getRoot() = root; // 更新 AST 的根節點
+        printAST(function, symbol);
         return;
     }
 
     if ( !symbol.isAtom(root) && !symbol.isList(root) ) {
         // 若該 AST 不為 List 結構，則報錯
         cout << "ERROR (non-list) : ";
-        printAST();
+        printAST(function, symbol);
         return;
     }
     while ( !st.empty() ) {
@@ -974,7 +1036,7 @@ void Function::optimizeAST() {
                 cout << msg.what();
                 cout << "\n> ";
                 // 因錯誤而結束該S-expression，重新讀取下一筆 S-expression
-                newAST();
+                function.newAST();
                 return;
             }
             catch ( const char *msg ) {
@@ -983,7 +1045,8 @@ void Function::optimizeAST() {
             catch ( ASTNode *temp ) {
                 root = temp;
                 symbol.isLambdaProcedure(root, NULL); // 檢查是否為 lambda 式
-                printAST();
+                *function.getRoot() = root; // 更新 AST 的根節點
+                printAST(function, symbol);
                 return;
             }
         }
@@ -993,7 +1056,9 @@ void Function::optimizeAST() {
         root = root_temp; // 若無結果，則回傳原本的 AST
     }
     else symbol.isLambdaProcedure(root, NULL); // 檢查是否為 lambda 式
-    printAST(); 
+
+    *function.getRoot() = root; // 更新 AST 的根節點
+    printAST(function, symbol);
 }
 
 Error::Error() {
@@ -1078,7 +1143,9 @@ Symbol::Symbol() {
     atom = Atom();
     error = Error(); 
     define = false;
+    eval = false; // 是否為 eval 的 S-expression
     lambda_tree.clear();
+    read = 0; // 設定 read 的數量
 }
 
 Symbol::~Symbol() {
@@ -1152,7 +1219,7 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         error.checkSymbol(*root, non_function, local_map); // 檢查是否為系統定義的函數
         procedure(root, non_function ? NULL : *parent); // 檢查是否為系統定義的函數
         if ( isCONS(*root, non_function ? NULL : *parent) ) return;
-        else if ( isQUOTE(*root, non_function ? NULL : *parent) ) return;
+        else if ( isQUOTE(*root, non_function ? NULL : parent) ) return;
         else if ( isList(*root, non_function ? NULL : *parent) ) return;
         else if ( isUserDefine(*root, non_function ? NULL : *parent, deep) ) return;
         else if ( isCAR(root, non_function ? NULL : parent) ) return;
@@ -1168,6 +1235,11 @@ void Symbol::symbolCheck(ASTNode **root, ASTNode **parent, int deep) {
         else if ( isLet(*root, non_function ? NULL : parent) ) return;
         else if ( isLambda(*root, non_function ? NULL : parent) ) return;
         else if ( isLambdaArg(*root, non_function ? NULL : parent) ) return;
+        else if ( isRead(*root, non_function ? NULL : parent) ) return;
+        else if ( isWrite(*root, non_function ? NULL : parent) ) return;
+        else if ( isChangeToString(*root, non_function ? NULL : parent) ) return;
+        else if ( isEval(*root, non_function ? NULL : parent) ) return;
+        else if ( isSet(*root, non_function ? NULL : parent) ) return;
         else userDefined(root, non_function ? NULL : parent);
     }
     catch ( const std::runtime_error &msg ) {
@@ -1237,57 +1309,78 @@ bool Symbol::isCONS(ASTNode *root, ASTNode *parent) {
     
 }
 
-bool Symbol::isQUOTE(ASTNode *root, ASTNode *parent) {
+bool Symbol::isQUOTE(ASTNode *root, ASTNode **parent) {
     /* 檢查 Symbol 是否為 QUOTE 並更新 AST */
     if ( root->value != "quote" ) return false;
-    else if ( !parent || parent->type != LEFT_PAREN ) {
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
         // 若父節點不為 LEFT_PAREN ，則不做 QUOTE function 功能，只留回傳功能
         root->value = "#<procedure " + root->value + ">";
         root->type = SYSTEM;
         return true;
     }
 
-    int arg = countFunctionArg(parent);   // 計算參數個數
+    int arg = countFunctionArg(*parent);   // 計算參數個數
 
     if ( arg != 1 ) 
         // 若參數個數不為1，則拋出錯誤
         throw std::runtime_error("ERROR (incorrect number of arguments) : quote\n");
-    
-    ASTNode *new_root = parent->right->left;    // 將 QUOTE 後的 S-expression 提高一個階層
+
+    ASTNode *new_root = (*parent)->right->left;    // 將 QUOTE 後的 S-expression 提高一個階層
     if ( new_root->type == NIL ) {
-        parent->type = END;
-        parent->value = "nil";
-        parent->left = NULL;
-        parent->right = NULL;
+        (*parent)->type = END;
+        (*parent)->value = "nil";
+        (*parent)->left = NULL;
+        (*parent)->right = NULL;
         return true;
     }
     else if ( new_root->type != LEFT_PAREN ) {
         // 該 S-expression 內的資料為 ATOM ，則需額外定義
-        parent->type = "QUOTE_DATA";
-        parent->value = new_root->value;
-        parent->left = NULL;
-        parent->right = NULL;
-        return true;
+        (*parent)->type = new_root->type == ERROR ? ERROR : "QUOTE_DATA";
+        if ( eval ) (*parent)->type = new_root->type; // 若為 eval 的 S-expression，則不需改變類型
+        (*parent)->value = new_root->value;
+        (*parent)->left = NULL;
+        (*parent)->right = NULL;
     }
-    parent->right = new_root->right;
-    parent->left = new_root->left;
-    stack<ASTNode*> st;
-    st.push(parent);
-    while ( !st.empty() ) {
-        ASTNode *cur = st.top();
-        st.pop();
-        if ( cur->left ) {
-            // 若有左子樹，則將其類型設為 QUOTE_DATA
-            if ( cur->left->type == SYMBOL ) cur->left->type = "QUOTE_DATA";
-            st.push(cur->left);
-        }
-        if ( cur->right ) {
-            // 若有右子樹，則將其類型設為 QUOTE_DATA
-            if ( cur->right->type == SYMBOL ) cur->right->type = "QUOTE_DATA";
-            st.push(cur->right);
+    else {
+        (*parent)->right = new_root->right;
+        (*parent)->left = new_root->left;
+        stack<ASTNode*> st;
+        st.push(*parent);
+        while ( !st.empty() ) {
+            ASTNode *cur = st.top();
+            st.pop();
+            if ( cur->left ) {
+                // 若有左子樹，則將其類型設為 QUOTE_DATA
+                if ( !eval && cur->left->type == SYMBOL ) cur->left->type = "QUOTE_DATA";
+                st.push(cur->left);
+            }
+            if ( cur->right ) {
+                // 若有右子樹，則將其類型設為 QUOTE_DATA
+                if ( !eval && cur->right->type == SYMBOL ) cur->right->type = "QUOTE_DATA";
+                st.push(cur->right);
+            }
         }
     }
-
+    
+    try {
+        if ( eval ) {
+            eval = false; // 若為 eval 的 S-expression，則不再需要檢查
+            if ( (*parent)->type == SYMBOL || (*parent)->left->type == SYMBOL )
+                checkExpression(&(*parent)->left, parent); // 若為 eval 的 S-expression，則需檢查其內容
+            else if ( (*parent)->left->type == LEFT_PAREN )
+                checkExpression(&(*parent)->left->left, &(*parent)->left);
+        }
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+    
     return true;
     
 }
@@ -1483,10 +1576,12 @@ void Symbol::copyTree(ASTNode *root, ASTNode *defined_tree) {
         root->left = new ASTNode();
         copyTree(root->left, defined_tree->left);
     }
+    else root->left = NULL; // 若無左子樹，則設為 NULL
     if ( defined_tree->right ) {
         root->right = new ASTNode();
         copyTree(root->right, defined_tree->right);
     }
+    else root->right = NULL; // 若無右子樹，則設為 NULL
 }
 
 bool Symbol::isCAR(ASTNode **root, ASTNode **parent) {
@@ -1625,6 +1720,8 @@ bool Symbol::checkPrimitivePredicate(ASTNode *root, ASTNode *parent) {
                 checkPrimitive = isBoolean(check_node);
             else if (root->value == "symbol?") 
                 checkPrimitive = isSymbol(check_node);
+            else if (root->value == "error-object?") 
+                checkPrimitive = isErrorObject(check_node);
             
             parent->type = BOOL;
             parent->value = checkPrimitive ? "#t" : "nil"; // 若為原始判斷式，則將其轉為 #t 或 nil
@@ -1708,6 +1805,12 @@ bool Symbol::isBoolean(ASTNode *root) {
 bool Symbol::isSymbol(ASTNode *root) {
     /* 檢查該 AST 是否為 Symbol */
     if ( root->type == SYMBOL || root->type == "QUOTE_DATA" ) return true;
+    return false;
+}
+
+bool Symbol::isErrorObject(ASTNode *root) {
+    /* 檢查該 AST 是否為 Error Object */
+    if ( root->type == ERROR ) return true;
     return false;
 }
 
@@ -2636,4 +2739,331 @@ void Symbol::defineFunction(string &key, ASTNode *parent) {
     }
 
     user_function_map[key] = function; // 將該 function 加入 user_function_map 中
+}
+
+bool Symbol::isRead(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 READ 並更新 AST */
+    if ( root->value != "read" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 READ function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( arg > 0 ) throw std::runtime_error("ERROR (incorrect number of arguments) : read\n");
+    
+    if ( !read_queue.empty() ) {
+        // 若讀入資料，則進行處理
+        *parent = read_queue.front(); // 將讀入資料設為父節點
+        read_queue.pop(); // 將讀入資料從佇列中移除
+    }
+    else {
+        // 第一次進入讀入資料，則等待使用者輸入
+        ++read; // 設定 read 加一，表示下一筆為讀入的資料
+        throw "Read"; // 拋出 Read，並等待讀入資料
+    }
+
+    return true;
+}
+
+bool Symbol::isWrite(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 WRITE 並更新 AST */
+    if ( root->value != "write" && root->value != "display-string" && root->value != "newline" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 WRITE function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( root->value != "newline" && arg != 1 ) throw std::runtime_error("ERROR (incorrect number of arguments) : " + root->value + "\n");
+    else if ( root->value == "newline" && arg != 0 ) throw std::runtime_error("ERROR (incorrect number of arguments) : newline\n");
+
+    if ( root->value == "newline" ) {
+        // 若為 newline，則直接輸出換行
+        cout << endl;
+        ASTNode *new_root = new ASTNode;
+        new_root->type = NIL; // 將其設為 nil
+        new_root->value = "nil"; // 將其值設為 nil
+        new_root->left = NULL; // 將其左子樹設為 NULL
+        new_root->right = NULL; // 將其右子樹設為 NULL
+        *parent = new_root;
+        return true;
+    }
+
+    try {
+        ASTNode *write_node = (*parent)->right->left, *temp = write_node;  // 分析參數
+        copyAndLink(&temp); // 複製一份，報錯時使用
+        checkExpression(&write_node->left, &write_node); // 檢查 Expression 內的內容
+        if ( !write_node ) {
+            // 若參數不存在，則報錯
+            cout << "ERROR (unbound parameter) : ";
+            throw temp;
+        }
+
+        ASTNode* display_string = new ASTNode;
+        copyTree(display_string, write_node);
+        if ( root->value == "display-string" ) {
+            if ( write_node->type != STRING && write_node->type != ERROR ) {
+                // 若參數不為 STRING 或 ERROR，則報錯
+                cout << "ERROR (display-string with incorrect argument type) : ";
+                throw write_node;
+            }
+            display_string->value = display_string->value.substr(1, display_string->value.size() - 2); // 去除 STRING 的引號
+        }
+
+        writeFunction(display_string); // 執行寫入功能
+        *parent = write_node;  // 將結構內的第一筆資料作為回傳結果
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+
+    return true;
+}
+
+void Symbol::writeFunction(ASTNode *root) {
+    /* 執行寫入功能 */
+    stack<pair<ASTNode*, string>> st;
+    st.push({root, ""});
+    int left_paren = 0, temp = 0;
+    bool beforeIsParen = false;
+
+    while ( !st.empty() ) {
+        ASTNode *cur = st.top().first;
+        string direction = st.top().second; // 紀錄該節點為左節點或右節點
+        st.pop();
+        // 遍歷子樹
+        if ( cur->right ) st.push({cur->right, "right"});
+        if ( cur->left ) st.push({cur->left, "left"});
+
+        if ( (cur->type == END || cur->value == "nil") && direction == "right") --left_paren; // 結束一個S-expression，則縮排
+        if ( !beforeIsParen && (direction != "right" || (!cur->left && !cur->right) ) ) {
+            if ( direction == "right" && cur->type != END && cur->value != "nil" && !cur->left && !cur->right ) {
+                // 若該節點為右節點，且內容不為左括弧以及結束節點，則印出點
+                for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                cout << "." << endl;
+            }
+            
+            for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+        }
+        else beforeIsParen = false;
+
+        if ( direction != "right" && cur->left && cur->right ) {
+            ++left_paren;
+            cout << "( ";
+            beforeIsParen = true; // 做為左括弧的下一筆資料，不需換行。因此標記
+        }
+        else if ( (cur->type == END || cur->value == "nil") && direction != "left" ) {
+            // 若該節點為右節點且為 END 或 nil，則印出右括弧
+            if ( direction != "right" )
+                cout << "nil";
+            else 
+                cout << ")";
+
+            if ( !st.empty() ) cout << endl;
+        }
+        else if ( !cur->left && !cur->right ) {
+            if ( atom.isFLOAT(cur->value) ) atom.isFLOAT(cur->value, true); // 若為浮點數，則取小數點後三位
+            cout << cur->value;
+            if ( !st.empty() ) cout << endl;
+
+            if ( direction == "right" ) {
+                --left_paren;
+                for ( int i = 0; i < left_paren; ++i ) cout << "  ";
+                cout << ")";
+                if ( !st.empty() ) cout << endl;
+            }    
+        }
+    }
+}
+
+bool Symbol::isChangeToString(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為轉換為 STRING 並更新 AST */
+    if ( root->value != "symbol->string" && root->value != "number->string" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做轉換為 STRING function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( arg != 1 ) throw std::runtime_error("ERROR (incorrect number of arguments) : " + root->value + "\n");
+
+    try {
+        ASTNode *change_node = (*parent)->right->left, *temp = change_node; // 該位置應該為需轉換的 S-expression
+        copyAndLink(&temp); // 將該 S-expression 複製一份，報錯時使用
+        checkExpression(&change_node->left, &change_node); // 檢查 Expression 內的內容
+        if ( !change_node ) {
+            // 若參數不存在，則報錯
+            cout << "ERROR (unbound parameter) : ";
+            throw temp;
+        }
+
+        ASTNode *new_root = new ASTNode();
+        new_root->type = STRING; // 將其設為 STRING
+        if ( root->value == "symbol->string" && change_node->type == "QUOTE_DATA" )
+            // 若參數為 QUOTE_DATA，則將其轉換為 STRING
+            new_root->value = "\"" + change_node->value + "\""; // 將其值設為 STRING
+        else if ( change_node->type == INT || change_node->type == FLOAT ) {
+            // 若參數為 INT 或 FLOAT，則轉換為 STRING
+            string value;
+            if ( atom.isINT(change_node->value) )
+                value = change_node->value; // 若為整數，則直接使用其值
+            else {
+                atom.isFLOAT(change_node->value, true); // 若為浮點數，則取小數點後三位
+                value = change_node->value;
+            }
+            new_root->value = "\"" + value + "\""; // 將其值設為 STRING
+        }
+        else
+            throw std::runtime_error("ERROR (" + root->value + " with incorrect argument type) : " + change_node->value + "\n");
+
+        new_root->left = NULL; // 將其左子樹設為 NULL
+        new_root->right = NULL; // 將其右子樹設為 NULL
+        *parent = new_root; // 將其設為新的根節點
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+
+    return true;
+
+}
+
+bool Symbol::isEval(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 EVAL 並更新 AST */
+    if ( root->value != "eval" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 EVAL function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( arg != 1 ) throw std::runtime_error("ERROR (incorrect number of arguments) : eval\n");
+
+    try {
+        ASTNode *run_node = (*parent)->right->left, *temp = run_node; // 該位置應該為需運行的 S-expression
+        eval = true; // 設定 eval 為 true，表示需要運行 S-expression
+        copyAndLink(&temp); // 將該 S-expression 複製一份，報錯時使用
+        checkExpression(&run_node->left, &run_node); // 檢查 Expression 內的內容
+        if ( !run_node ) {
+            // 若參數不存在，則報錯
+            cout << "ERROR (unbound parameter) : ";
+            throw temp;
+        }
+        eval = false; // 設定 eval 為 false，表示不需要運行 S-expression
+        *parent = run_node; // 將其設為新的根節點
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+
+    return true;
+
+}
+
+bool Symbol::isSet(ASTNode *root, ASTNode **parent) {
+    /* 檢查 Symbol 是否為 SET 並更新 AST */
+    if ( root->value != "set!" ) return false;
+    else if ( !parent || (*parent)->type != LEFT_PAREN ) {
+        // 若父節點不為 LEFT_PAREN ，則不做 SET function 功能，只留回傳功能
+        root->value = "#<procedure " + root->value + ">";
+        root->type = SYSTEM;
+        return true;
+    }
+
+    int arg = countFunctionArg(*parent);   // 計算參數個數
+
+    if ( arg != 2 ) {
+        // 若參數個數不為2，則拋出錯誤
+        cout << "ERROR (SET! format) : ";
+        throw *parent;
+    }
+
+    string key = (*parent)->right->left->value; // 取得被定義的 SYMBOL
+    try {
+        if ( ( (*parent)->right->left->type != SYMBOL )
+            || symbol_set.find(key) != symbol_set.end() 
+            || primitive_predicate.find(key) != primitive_predicate.end() 
+            || basic_arithmetic.find(key) != basic_arithmetic.end() ) {
+            // 若該 SYMBOL 為系統定義，則拋出錯誤
+            cout << "ERROR (SET! format) : ";
+            throw *parent;
+        }
+        
+        ASTNode *value = (*parent)->right->right->left, *temp = value; // 取得被定義的 SYMBOL 的值
+        copyAndLink(&temp); // 複製一份，報錯時使用
+        checkExpression(&value->left, &value); // 檢查被定義的 SYMBOL 內的內容
+        if ( !value ) {
+            // 若無結果，則拋出錯誤
+            cout << "ERROR (no return value) : ";
+            throw temp;
+        }
+
+        bool local_var = false, lambda = false; // 是否為區域變數
+        queue<pair<unordered_map<string, ASTNode*>, bool>> local_queue_temp; // 將當前的 local_map 暫存
+        while ( !local_map.empty() ) {
+            // 若該 SYMBOL 為當前區域定義過的，則將其指向進當前 AST
+            unordered_map<string, ASTNode*> local = local_map.top().first; // 取得當前區域的變數
+            bool lambda_map = local_map.top().second; // 取得當前區域是否為 Lambda 定義
+            if ( !lambda && !local_var && local.find(key) != local.end() ) {
+                // 區域變數
+                local[key] = value; // 將區域變數內容指向進當前 AST
+                local_var = true; // 設定為區域變數
+            }
+            else if ( lambda_map ) lambda = true; // 若為 Lambda 定義，則不需繼續檢查
+            local_queue_temp.push({local, lambda_map}); // 將當前區域的變數庫暫存
+            local_map.pop(); // 將當前區域的變數移除
+        }
+
+        while ( !local_queue_temp.empty() ) {
+            // 將當前的 local_map 恢復
+            local_map.push(local_queue_temp.front());
+            local_queue_temp.pop();
+        }
+
+        if ( !local_var )
+            user_map[key] = value;    // 將定義過的 SYMBOL 加入 map 中
+        *parent = value; // 將其設為新的根節點
+    }
+    catch ( const std::runtime_error &msg ) {
+        throw msg;
+    }
+    catch ( const char *msg ) {
+        throw msg;
+    }
+    catch ( ASTNode *temp ) {
+        throw temp;
+    }
+
+    return true;
 }
